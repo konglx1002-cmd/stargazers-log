@@ -25,9 +25,14 @@ function urlForSchema(rootUrl, schemaName) {
   return url.toString();
 }
 
-async function runMigrationDeploy(databaseUrl) {
+export async function runMigrationDeploy(databaseUrl, schemaPath) {
   const prismaCli = resolve("node_modules/prisma/build/index.js");
-  const child = spawn(process.execPath, [prismaCli, "migrate", "deploy"], {
+  const args = [prismaCli, "migrate", "deploy"];
+  if (schemaPath) {
+    args.push("--schema", schemaPath);
+  }
+
+  const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -54,7 +59,7 @@ async function runMigrationDeploy(databaseUrl) {
   }
 }
 
-export async function createPostgresTestDatabase(schemaName) {
+async function createPostgresTestDatabaseInternal(schemaName, applyMigrations) {
   if (!/^[a-z0-9_]+$/.test(schemaName)) {
     throw new Error("PostgreSQL test schema names may only contain lowercase letters, digits, and underscores.");
   }
@@ -69,7 +74,9 @@ export async function createPostgresTestDatabase(schemaName) {
   await admin.$executeRawUnsafe(`CREATE SCHEMA "${schemaName}"`);
 
   try {
-    await runMigrationDeploy(databaseUrl);
+    if (applyMigrations) {
+      await runMigrationDeploy(databaseUrl);
+    }
   } catch (error) {
     await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
     await admin.$disconnect();
@@ -87,4 +94,12 @@ export async function createPostgresTestDatabase(schemaName) {
       await admin.$disconnect();
     },
   };
+}
+
+export function createEmptyPostgresTestDatabase(schemaName) {
+  return createPostgresTestDatabaseInternal(schemaName, false);
+}
+
+export function createPostgresTestDatabase(schemaName) {
+  return createPostgresTestDatabaseInternal(schemaName, true);
 }
