@@ -90,7 +90,9 @@ ProjectDiary 没有 `(projectId, entryDate)` 唯一约束，因此同一项目�
 
 `(ProjectDiary.userId, ProjectDiary.projectId)` 通过复合外键引用 `(Project.userId, Project.id)`。数据库会拒绝把用户 A 的 ProjectDiary 写入用户 B 的 Project。每篇 ProjectDiary 只有一个必填 `projectId`，不会与原 Diary 建立关系。
 
-`entryDate` 不设置数据库默认值，因为数据库无法从记录本身安全获得当前用户的 IANA 时区。未来创建 API 在调用方未提供日期时，必须复用服务端时区工具计算用户本地 `YYYY-MM-DD`，再保存为对应的 UTC 零点日期键，避免 UTC 日期偏差。
+`entryDate` 不设置数据库默认值，因为数据库无法从记录本身安全获得当前用户的 IANA 时区。创建 API 在调用方未提供日期时，复用服务端时区工具计算用户本地 `YYYY-MM-DD`，再保存为对应的 UTC 零点日期键，避免 UTC 日期偏差。异常的旧用户时区配置仅在项目日志模块回退至 `Asia/Shanghai`。
+
+阶段 4 在不修改 Schema 的前提下增加项目日志服务：读写同时限定用户、项目及日志 ID；写入事务对所属 Project 使用 `SELECT ... FOR UPDATE`，持锁检查归档状态后才创建或编辑日志。归档 Project 的 UPDATE 竞争同一行锁，阻止归档检查与日志写入之间的并发间隙。归档只读，不会删除日志；恢复不会修改日志数据。
 
 ### 2.5 Better Auth 模型
 
@@ -113,7 +115,7 @@ ProjectDiary 没有 `(projectId, entryDate)` 唯一约束，因此同一项目�
 
 用户设置使用相同的隔离原则：服务端从 Session 获取 `User.id`，并只以该主键更新用户记录。请求体如果包含 `userId` 会直接返回 `400`。
 
-未来 Project 与 ProjectDiary API 必须使用相同原则：只采用 Session 的 `user.id`，所有查询和更新同时限定 `userId`。不存在和不属于当前用户的资源统一返回 `404`。复合外键保护写入归属，但不替代应用层读取授权。
+Project 与 ProjectDiary API 使用相同原则：只采用 Session 的 `user.id`，所有查询和更新同时限定 `userId`。项目日志还限定 `projectId`；项目与日志 ID 不匹配时同样返回 `404`。复合外键保护写入归属，但不替代应用层读取授权。
 
 ## 4. Migration 历史
 

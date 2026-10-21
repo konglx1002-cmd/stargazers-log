@@ -34,7 +34,36 @@
 
 页面：`/projects`、`/projects/new`、`/projects/[id]`、`/projects/[id]/edit`。所有页面服务端鉴权；未登录重定向 `/login`，他人项目和不存在的项目返回 404。列表通过 `/projects?archived=true` 单独查看已归档项目。
 
-ProjectDiary 的创建、编辑、搜索及其 API 留到阶段 4，当前页面未提供相应入口。
+## v2.4 项目独立日志（阶段 4）
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `GET /api/projects/[id]/diaries` | 当前项目日志列表，返回 `diaries`、`page`、`pageSize`、`hasNext` |
+| `POST /api/projects/[id]/diaries` | 每次新建独立日志，返回 `201` 和 `{ "diary": {...} }` |
+| `GET /api/projects/[id]/diaries/[diaryId]` | 当前用户、当前项目内指定日志 |
+| `PATCH /api/projects/[id]/diaries/[diaryId]` | 只更新指定日志，返回 `{ "diary": {...} }` |
+
+创建字段：`title`、`completedTasks`、`problems`、`nextPlan` 都必须为字符串；`entryDate` 可省略，省略时根据 Session 用户 IANA 时区计算日期。无效的旧用户时区回退 `Asia/Shanghai`。编辑可以提交上述字段的任意非空子集。
+
+- 标题去除首尾空格后必填，最多 200 个 UTF-16 代码单元；三个正文栏分别最多 20,000 个 UTF-16 代码单元，可为空文本，前后端共用校验函数和长度常量。
+- 日期只接受 `0001-01-01` 至 `9999-12-31` 的真实 `YYYY-MM-DD` 日期，允许历史日期，不接受日期时间字符串、溢出日期或无效闰日。以相应 UTC 零点保存日期键，实际创建时刻另存 `createdAt`。
+- 不接受 `userId`、`projectId`、`id`、时间戳或其他未知字段。非法请求返回 `400`。
+- 创建使用 `create`，没有按日期 upsert；同项目同日允许多篇。编辑同时限定 `id`、`userId`、`projectId`。
+- 所有 API 未登录返回 `401`；他人项目、他人日志、不匹配的项目/日志组合和不存在资源统一 `404`。
+- 归档项目可读取和搜索日志；新增或编辑返回 `409`。恢复归档不修改已有日志。ACTIVE、PAUSED、COMPLETED 均允许写入未归档项目日志。
+- 写入事务执行带用户条件的 Project `SELECT ... FOR UPDATE`，在持有行锁期间检查归档状态并创建或更新日志。Project 归档的 UPDATE 与该锁互斥：归档先提交时，排队的写入重新读取归档状态并拒绝；写入先拿锁时，先完成写入，归档随后生效。
+
+列表查询参数：
+
+| 参数 | 默认值与规则 |
+| --- | --- |
+| `date` | 可选，精确匹配日志日期；空值表示全部日期 |
+| `q` | 可选，最多 200 个 UTF-16 代码单元，在标题及三个正文栏内执行不区分大小写的包含搜索；空白表示不搜索 |
+| `page` | 默认 1，只接受 1–1000 的整数页码；每页固定 20 条 |
+
+日期和关键词可组合，始终叠加当前 Session 用户与项目条件。排序为 `entryDate DESC, createdAt DESC, id ASC`。单次只取最多 21 条判断下一页，不执行全部结果计数；超过 1000 页时需缩小日期或搜索范围。偏移分页期间若有新增/编辑，页面内容可能移动，刷新或重新筛选可重新读取当前顺序。
+
+项目详情页 `/projects/[id]` 提供列表、日期/关键词筛选、分页和新建入口。独立页面包括 `/projects/[id]/diaries/new`、`/projects/[id]/diaries/[diaryId]`、`/projects/[id]/diaries/[diaryId]/edit`。归档时列表/详情仍可读，但不提供日志新建或编辑入口；直接访问新建/编辑页显示只读提示，不渲染表单。原 Diary API 不变。
 
 ## 2. 健康检查
 
