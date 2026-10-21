@@ -13,7 +13,7 @@
 - 用户个人设置页面，可修改用户名和时区。
 - 登录后的基础 Dashboard，包括今日状态、最近 3 篇日志和快捷入口。
 
-当前没有标签、项目管理、统计图表、AI 功能或 PostgreSQL 部署。
+v2.4 阶段 3 新增科研项目的创建、列表、详情、编辑、状态切换、归档与恢复。ProjectDiary 页面和 API 留到阶段 4。当前没有标签、统计图表或 AI 功能。
 
 ## 2. 技术栈
 
@@ -76,6 +76,14 @@ Dashboard 同样只通过 `diary-service` 获取数据：今日状态使用 `get
 ### 4.3 今日日期
 
 当前用户的 `timeZone` 保存在 `User` 中，并随 Session 用户数据返回。今日记录接口把 Session 中的 `user.id` 和 `user.timeZone` 一起传给 Diary 服务。服务使用 `Intl.DateTimeFormat` 将当前时间转换成该时区的 `YYYY-MM-DD` 日期键，再查询或写入当日日志。
+
+### 4.4 科研项目管理
+
+`src/features/project/project-service.ts` 集中处理 Project 数据访问与字段校验，页面和 `/api/projects`、`/api/projects/[id]` 均复用它。所有查询使用服务端 Session 的 `user.id`，更新通过 `(userId, id)` 复合唯一键限定所有者，不接受客户端指定身份。
+
+`/projects` 和详情、编辑页面由服务端组件鉴权并加载数据，创建/编辑表单与归档按钮使用客户端组件调用 JSON API。列表默认未归档，`?archived=true` 只展示已归档项目。归档只更新 `archivedAt`，恢复设为 `null`，不修改 ProjectDiary 或原 Diary。
+
+项目管理没有物理删除接口。项目独立日志和 Dashboard 最近项目模块尚未接入。
 
 ## 5. 页面边界
 

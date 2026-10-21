@@ -8,6 +8,34 @@
 - 客户端不需要、也不能通过传入 `userId` 指定数据归属。
 - 当前没有公开的 Diary 删除 API，也没有单独的 Diary 详情 JSON API。
 
+## v2.4 科研项目管理（阶段 3）
+
+所有 Project API 使用 Better Auth Session；未登录返回 `401`。项目详情和更新只查询当前用户，不存在和其他用户的项目均返回 `404` 与 `{ "message": "项目不存在" }`。响应不包含 `userId`。
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `GET /api/projects` | 返回 `{ "projects": [...] }`，默认仅未归档项目 |
+| `GET /api/projects?archived=true` | 仅返回已归档项目；`false` 等价于默认，其余值返回 `400` |
+| `POST /api/projects` | 接收 `name` 和可选 `description`，返回 `201` 与 `{ "project": {...} }` |
+| `GET /api/projects/[id]` | 读取当前用户项目，已归档项目也可读取 |
+| `PATCH /api/projects/[id]` | 更新一个或多个 `name`、`description`、`status`、`archived` 字段，返回 `{ "project": {...} }` |
+
+项目返回字段：`id`、`name`、`description`、`status`、`archivedAt`、`createdAt`、`updatedAt`。时间为 ISO 字符串，未归档时 `archivedAt` 为 `null`。列表按 `updatedAt DESC, id ASC` 稳定排序。
+
+校验规则：
+
+- `name` 去除首尾空白后不能为空，最多 100 个 UTF-16 代码单元，与 HTML `maxLength` 一致；允许同一用户重名。
+- `description` 必须是字符串，最多 5000 个 UTF-16 代码单元；省略时默认空字符串。
+- 新建默认状态为 `ACTIVE`，创建请求只接受 `name`、`description`。
+- 更新 `status` 只能为 `ACTIVE`、`PAUSED`、`COMPLETED`。
+- `archived` 只能为布尔值；`true` 由服务端记录当前归档时间，`false` 恢复为 `null`，不改变项目状态和日志。
+- 不接受 `userId`、`id`、`archivedAt` 或其他未知字段。空更新、非法 JSON、数组、非法字段类型和超长输入返回 `400`。
+- 未实现 `DELETE`，请求会返回 `405`。归档与恢复不删除 Project、ProjectDiary 或原 Diary。
+
+页面：`/projects`、`/projects/new`、`/projects/[id]`、`/projects/[id]/edit`。所有页面服务端鉴权；未登录重定向 `/login`，他人项目和不存在的项目返回 404。列表通过 `/projects?archived=true` 单独查看已归档项目。
+
+ProjectDiary 的创建、编辑、搜索及其 API 留到阶段 4，当前页面未提供相应入口。
+
 ## 2. 健康检查
 
 ### `GET /api/health`

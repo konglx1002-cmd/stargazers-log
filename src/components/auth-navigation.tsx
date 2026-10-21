@@ -7,6 +7,7 @@ const links = [
   { href: "/diary", label: "今日记录" },
   { href: "/history", label: "历史记录" },
   { href: "/search", label: "搜索" },
+  { href: "/projects", label: "科研项目" },
 ];
 
 export async function AuthNavigation() {
