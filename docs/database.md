@@ -6,6 +6,8 @@
 
 生产环境由 Render 运行应用并连接 Neon PostgreSQL。仓库不保存生产连接信息；所有本地迁移验证必须显式使用可丢弃的测试数据库，不能依赖未确认的环境变量。
 
+下述 Project / ProjectDiary 是本地 v2.4 Schema，不表示生产已应用该 migration；正式库的迁移版本与结构尚待获准后核实。阶段 5A 没有修改 Schema 或执行线上操作。
+
 ## 2. 模型概览
 
 ```text
@@ -152,7 +154,7 @@ PostgreSQL 初始 migration 直接表达当前 Schema，使用 PostgreSQL 的 `T
 
 ## 7. 数据迁移边界
 
-Phase 1 没有把 SQLite 数据导入 PostgreSQL。后续数据迁移仍需单独处理 User、Account、Diary 数据，保留所有 ID、关联、密码哈希、日期和内容，并验证迁移前后的数量与内容一致性。归档的 SQLite migration 不能在 PostgreSQL 上执行。
+历史 PostgreSQL 适配阶段与 SQLite 导入演练分别实施。当前生产已使用 Neon，本次 v2.4 只处理增量 Schema，不再次导入或转换 User、Account、Diary 数据。归档的 SQLite migration 不能在 PostgreSQL 上执行。
 
 v2.4 项目日志 migration 是纯增量变更：不转换旧 Diary，不修改 Better Auth 表，也不为旧 Diary 自动创建 ProjectDiary。正式上线步骤和恢复边界见 [v2.4 项目日志安全迁移](project-diary-migration.md)。
 

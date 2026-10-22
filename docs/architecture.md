@@ -2,7 +2,7 @@
 
 ## 1. 项目定位与当前范围
 
-科研成长日志是一个基于 Web 的多人科研记录工具。当前系统已经完成：
+科研成长日志是一个基于 Web 的多人科研记录工具。正式应用为 Render + Neon（依据维护者确认），本次未访问生产环境；下文描述当前本地代码，不代表 v2.4 已上线。已有基础功能包括：
 
 - Diary MVP：创建、读取和更新当日日志。
 - 历史日志列表与日志详情。
@@ -22,7 +22,8 @@ v2.4 提供科研项目管理及项目独立日志：每个项目可在同日创
 | Web 框架 | Next.js 16，App Router |
 | UI | React 19、TypeScript、Tailwind CSS 4 |
 | 数据访问 | Prisma 6 |
-| 数据库 | PostgreSQL（本地适配完成，尚未部署云端） |
+| 数据库 | Neon PostgreSQL（正式环境）；Docker PostgreSQL（本地测试） |
+| 应用部署 | Render（实际 live SHA 和自动部署设置待核实） |
 | 认证 | Better Auth，Prisma Adapter，邮箱密码认证 |
 | 测试 | Node.js 内置测试运行器 |
 | 代码检查 | ESLint |
@@ -71,7 +72,7 @@ tests/                         认证、Diary 隔离和时区测试
 
 `diary-service` 是当前 Diary 数据访问边界。历史、搜索、详情和今日记录的查询都要求传入服务端获得的 `userId`。客户端请求体中的 `userId` 不参与权限判断或数据写入。
 
-Dashboard 同样只通过 `diary-service` 获取数据：今日状态使用 `getTodayDiary(user.id, user.timeZone)`，最近日志使用 `getRecentDiaries(user.id)`，后者在用户条件内按日期倒序取 3 条。首页不直接访问 Prisma。
+Dashboard 的今日状态使用 `getTodayDiary(user.id, user.timeZone)`，最近日志使用 `getRecentDiaries(user.id)`，后者在用户条件内按日期倒序取 3 条。项目区域调用 `project-service.getDashboardProjects(user.id)`；三项业务查询并行执行，首页不直接访问 Prisma。未登录时不执行这些个人业务查询。
 
 ### 4.3 今日日期
 
@@ -83,7 +84,11 @@ Dashboard 同样只通过 `diary-service` 获取数据：今日状态使用 `get
 
 `/projects` 和详情、编辑页面由服务端组件鉴权并加载数据，创建/编辑表单与归档按钮使用客户端组件调用 JSON API。列表默认未归档，`?archived=true` 只展示已归档项目。归档只更新 `archivedAt`，恢复设为 `null`，不修改 ProjectDiary 或原 Diary。
 
-项目管理没有物理删除接口。Dashboard 最近项目模块尚未接入。
+项目管理没有物理删除接口。Dashboard 最近项目模块已在本地接入，尚未发布。
+
+项目区域使用一条参数化 SQL：限定当前用户和未归档项目，在数据库内 LEFT JOIN 同用户 ProjectDiary，聚合 COUNT 与 MAX(entryDate)，按 `COALESCE(MAX(entryDate), Project.createdAt) DESC, Project.createdAt DESC, Project.id ASC` 排序，LIMIT 3。日志日期为 UTC 零点日期键，无日志时才用创建时间作为回退。三个状态都参与，归档项目不参与。只传回 ID、名称、状态、计数和最近日期，不加载描述/日志正文，没有逐项目查询。
+
+准确聚合仍会处理当前用户符合条件的项目及日志，LIMIT 3 限制的是返回量，不是扫描量。现有 `(userId, archivedAt, status)` 与日志 `(userId, projectId, entryDate, createdAt, id)` 索引可支持用户/项目条件；大规模性能需在隔离环境分析，不把本地测试等同于生产容量保证。
 
 ### 4.5 项目独立日志
 
@@ -110,18 +115,18 @@ Dashboard 同样只通过 `diary-service` 获取数据：今日状态使用 `get
 
 ## 6. 云端演进边界
 
-当前架构通过 Prisma 隔离数据库访问。Prisma Schema 和 Better Auth Adapter 已切换到 PostgreSQL，并建立了独立的 PostgreSQL migration 历史；云端资源、SQLite 数据迁移、备份恢复和生产环境密钥仍未实施。
+正式应用已使用 Render + Neon；Prisma 与 Better Auth 复用 PostgreSQL。v2.4 的本地 migration、项目功能和 Dashboard 集成尚未生产发布；Neon 实际迁移历史、备份恢复窗口与 Render live SHA、自动部署配置本次均未核实。
 
-## 7. v2.2 云端化架构计划
+## 7. 发布架构与边界
 
-Phase 0 已完成部署工程准备：
+仓库已准备：
 
 - 使用 `.nvmrc` 和 `packageManager` 固定 Node.js 与 pnpm 版本。
-- 使用 `.env.production.example` 定义未来云端环境变量接口，不保存真实密钥。
+- 使用 `.env.production.example` 定义变量接口，不保存真实密钥。
 - 明确区分本地开发迁移 `db:migrate:dev` 与生产迁移 `db:migrate:deploy`。
 - 建立本地、staging 和 production 的部署流程文档。
 
-Phase 1 已完成 PostgreSQL 数据库适配和本地验证。后续目标架构为 Next.js Node.js 应用、托管 PostgreSQL 和 Better Auth。应用流量使用 PostgreSQL 连接池地址，发布流水线通过数据库直连地址执行已经提交的 migration。Better Auth 仍由 Next.js 提供接口并通过 Prisma 保存用户、账户和 Session，不引入独立认证服务。
+应用流量应使用 Neon 连接池地址，批准后的迁移入口使用直连地址。Better Auth 由 Next.js 提供接口，不引入独立认证服务。生产备份与恢复必须验证实际可用性，不能把已有运行手册当作演练已通过。
 
-原 SQLite migration 已归档且不会被 PostgreSQL 执行。实际 SQLite 数据、托管资源和上线流水线属于后续 Phase，Phase 1 没有迁移生产数据或进行部署。
+原 SQLite migration 只作为历史归档。本次 v2.4 是在现有 Neon 上的增量发布，不进行数据库引擎转换。CI、staging migration workflow 与 Render 发布是不同入口，任何 push 或云端变更都需要发布授权；具体门禁见 [deployment.md](deployment.md)。
 

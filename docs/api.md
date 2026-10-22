@@ -1,5 +1,7 @@
 # API 说明
 
+本文描述当前本地代码；v2.4 项目及 Dashboard 集成功能尚未发布到 Render，不能据此判断线上已提供这些接口。
+
 ## 1. 通用约定
 
 - Diary API 和用户设置 API 使用 JSON。
@@ -265,5 +267,7 @@ Dashboard 没有新增公开 JSON API。登录后的 `/` 是服务端页面，�
 - `getTodayDiary(user.id, user.timeZone)`：返回用户时区下的今日日期和今日 Diary 状态。
 - `getRecentDiaries(user.id)`：只查询当前用户，按日期倒序返回最多 3 篇 Diary。
 
-未登录访问 `/` 时不会执行个人 Diary 查询，只展示产品介绍以及登录、注册入口。
+项目区域同时调用 `project-service.getDashboardProjects(user.id)`，返回最多 3 个未归档项目的 ID、名称、状态、ProjectDiary 总数和最近日志日期（无日志为 null）。它是一条参数化聚合 SQL，项目和日志均限定当前用户；按最近 entryDate、无日志时的项目 createdAt 回退形成统一活动排序键，再按项目 createdAt DESC、id ASC 稳定排序。所有状态参与，归档项目排除，不读取日志正文。
+
+未登录访问 `/` 时不会执行个人 Diary 或项目查询，只展示产品介绍以及登录、注册入口。
 

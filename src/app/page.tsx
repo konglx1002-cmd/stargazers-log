@@ -3,6 +3,8 @@ import Link from "next/link";
 import { AppNavigation } from "@/components/app-navigation";
 import { getRecentDiaries, getTodayDiary } from "@/features/diary/diary-service";
 import { formatDiaryDate } from "@/features/diary/format";
+import { getDashboardProjects } from "@/features/project/project-service";
+import { projectStatusLabels } from "@/features/project/types";
 import { getCurrentUser } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
@@ -35,9 +37,10 @@ export default async function HomePage() {
     return <PublicHome />;
   }
 
-  const [today, recentDiaries] = await Promise.all([
+  const [today, recentDiaries, recentProjects] = await Promise.all([
     getTodayDiary(user.id, user.timeZone),
     getRecentDiaries(user.id),
+    getDashboardProjects(user.id),
   ]);
 
   return (
@@ -100,6 +103,30 @@ export default async function HomePage() {
                 <p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">
                   {diary.completedTasks.trim() || "未填写完成事项"}
                 </p>
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section aria-label="我的科研项目" className="mt-12">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <h2 className="text-2xl font-semibold">我的科研项目</h2>
+          <Link className="text-sm font-medium text-slate-600 hover:text-slate-950" href="/projects">全部科研项目</Link>
+        </div>
+        {recentProjects.length === 0 ? (
+          <div className="mt-6 rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
+            <p className="text-slate-700">暂无未归档的科研项目，创建你的第一个项目吧。</p>
+            <Link className="mt-5 inline-flex rounded-lg bg-slate-900 px-5 py-3 font-medium text-white hover:bg-slate-700" href="/projects/new">创建科研项目</Link>
+          </div>
+        ) : (
+          <div className="mt-6 grid gap-4 md:grid-cols-3">
+            {recentProjects.map((project) => (
+              <Link className="min-w-0 rounded-xl border border-slate-200 bg-white p-5 transition hover:border-slate-400 hover:shadow-sm" href={`/projects/${project.id}`} key={project.id}>
+                <p className="text-sm text-slate-500">{projectStatusLabels[project.status]}</p>
+                <h3 className="mt-3 break-words text-lg font-semibold text-slate-900">{project.name}</h3>
+                <p className="mt-4 text-sm text-slate-600">项目日志：{project.diaryCount} 篇</p>
+                <p className="mt-2 text-sm text-slate-600">最近日志：{project.lastEntryDate ? <time dateTime={project.lastEntryDate}>{formatDiaryDate(project.lastEntryDate)}</time> : "暂无日志"}</p>
               </Link>
             ))}
           </div>

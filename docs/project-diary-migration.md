@@ -19,7 +19,7 @@
 
 1. 确认待发布 commit 与审核通过的 migration SQL 完全一致，工作区干净，CI 的 lint、测试和 build 全部通过。
 2. 在受控终端中确认 `DATABASE_URL` 指向 Render 应用使用的 Neon 连接池地址，`DIRECT_URL` 指向同一 Neon 项目的直连地址。只检查变量是否存在和目标环境标识，不打印变量值。
-3. 运行只读的 `prisma migrate status`，确认生产 `_prisma_migrations` 已包含 `20261014000000_postgresql_init`，且不存在失败、漂移或未知 migration。
+3. 运行只读的 `prisma migrate status` 核对历史，再单独核对实际 DDL、索引和外键。status 不等同于 Schema 漂移检查；确认基线正常、目标 migration 是否待执行，失败或未知记录均停止发布。
 4. 记录发布前 User、Diary、Account、Session 数量；导出 Diary 的 `id`、`userId`、`date`、三个正文栏、`content`、`createdAt`、`updatedAt` 的受控校验摘要。摘要不得包含正文或凭据。
 5. 在 Neon 确认 Point-in-Time Restore 或等价备份可用，记录恢复点时间，并实际确认操作者具备创建恢复分支/副本的权限。
 6. 优先在由该恢复点创建的独立 Neon 分支或隔离 staging 数据库执行一次完整演练。演练目标不得连接 Render production。
@@ -47,7 +47,7 @@
 2. 对审核通过的同一 commit 再次运行 CI 和部署前检查。
 3. 通过受审批的单一 migration Job 使用 `DIRECT_URL` 运行 `prisma migrate deploy`。不得使用 `migrate dev`、`db push` 或 `migrate reset`。
 4. 立即运行 `prisma migrate status`，确认 migration 已成功应用。
-5. 比较发布前后的旧表数量和 Diary 校验摘要，确认 Project 与 ProjectDiary 初始为空。
+5. 比较发布前后的旧表数量和 Diary 校验摘要。首次建表应为空；如果目标 migration 已应用或新表已有数据，先核实来源并保留，不得清空或重复导入。
 6. 部署同一 commit 的 Render 应用；数据库 migration 不放入应用启动命令。
 7. 先检查 `/api/health`，再验证注册、登录、Session、设置、原 Diary 创建/更新、历史、详情、搜索和双用户隔离。
 8. v2.4 API 上线后，再验证项目归档、同日多篇项目日志、项目日志搜索和跨用户 404。
@@ -77,3 +77,5 @@
 - 验证同项目同日多篇、排序、复合外键、用户范围更新、软归档和原 Diary 唯一约束。
 
 测试数据库必须通过显式的本机或 CI `TEST_DATABASE_URL` 提供。无法证明目标隔离时禁止运行测试。
+
+当前 Render 自动部署、Neon 实际 migration 与恢复能力尚未在阶段 5A 核实；完整发布门禁、失败回滚和手机验收见 [deployment.md](deployment.md)。本文不是生产操作授权。

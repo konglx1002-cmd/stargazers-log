@@ -88,6 +88,33 @@ export async function getProjects(userId: string, archived = false) {
   return projects.map(toProjectData);
 }
 
+export async function getDashboardProjects(userId: string) {
+  const projects = await prisma.$queryRaw<{
+    id: string;
+    name: string;
+    status: ProjectStatus;
+    diaryCount: number;
+    lastEntryDate: Date | null;
+  }[]>`
+    SELECT p."id", p."name", p."status",
+           COUNT(d."id")::int AS "diaryCount",
+           MAX(d."entryDate") AS "lastEntryDate"
+    FROM "Project" p
+    LEFT JOIN "ProjectDiary" d
+      ON d."projectId" = p."id" AND d."userId" = p."userId" AND d."userId" = ${userId}
+    WHERE p."userId" = ${userId} AND p."archivedAt" IS NULL
+    GROUP BY p."id", p."name", p."status", p."createdAt"
+    ORDER BY COALESCE(MAX(d."entryDate"), p."createdAt") DESC,
+             p."createdAt" DESC, p."id" ASC
+    LIMIT 3
+  `;
+
+  return projects.map((project) => ({
+    ...project,
+    lastEntryDate: project.lastEntryDate?.toISOString().slice(0, 10) ?? null,
+  }));
+}
+
 export async function getProjectById(userId: string, id: string) {
   const project = await prisma.project.findFirst({ where: { id, userId }, select: projectSelect });
   return project ? toProjectData(project) : null;
