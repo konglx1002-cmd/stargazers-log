@@ -1,0 +1,398 @@
+name: Neon v2.4 Test — Deploy Once
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch_state:
+        description: Confirm v2.4-migration-test is ACTIVE and not expired in Neon
+        required: true
+        type: choice
+        options:
+          - CONFIRMED_ACTIVE_IN_NEON_CONSOLE
+      deploy_confirmation:
+        description: Type DEPLOY_ONCE_TO_V24_TEST_BRANCH to authorize test-only database writes
+        required: true
+        type: string
+      endpoint_id:
+        description: Enter the confirmed Neon Primary Endpoint ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neon-v24-migration-test-status
+  cancel-in-progress: false
+
+jobs:
+  test-migration-deploy:
+    name: Deploy approved migration to test branch only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: neon-v24-migration-test-status
+
+    steps:
+      - name: Validate manual safety gate
+        shell: bash
+        env:
+          CONFIRMED_BRANCH_STATE: ${{ inputs.branch_state }}
+          CONFIRMED_ENDPOINT_ID: ${{ inputs.endpoint_id }}
+          DEPLOY_CONFIRMATION: ${{ inputs.deploy_confirmation }}
+          EXPECTED_ENDPOINT_ID: ep-silent-term-b37hgmn5
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "This workflow must be dispatched from the default main branch." >&2
+            exit 1
+          fi
+          if [[ "${DEPLOY_CONFIRMATION}" != "DEPLOY_ONCE_TO_V24_TEST_BRANCH" ]]; then
+            echo "Explicit test-only migration authorization is missing." >&2
+            exit 1
+          fi
+          if [[ "${CONFIRMED_BRANCH_STATE}" != "CONFIRMED_ACTIVE_IN_NEON_CONSOLE" ]]; then
+            echo "The Neon test branch activity confirmation is missing." >&2
+            exit 1
+          fi
+          if [[ "${CONFIRMED_ENDPOINT_ID}" != "${EXPECTED_ENDPOINT_ID}" ]]; then
+            echo "The manually confirmed Endpoint ID does not match the approved test endpoint." >&2
+            exit 1
+          fi
+
+      - name: Check out the audited v2.4 commit
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          ref: 4e35966d5f4f2c47882afbc55ccecd191d871c0b
+          path: target
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checked-out commit and audited Prisma files
+        working-directory: target
+        shell: bash
+        env:
+          EXPECTED_COMMIT: 4e35966d5f4f2c47882afbc55ccecd191d871c0b
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${EXPECTED_COMMIT}" ]]
+          node <<'NODE'
+          const { createHash } = require("node:crypto");
+          const { readdirSync, readFileSync } = require("node:fs");
+
+          const expectedFiles = new Map([
+            ["prisma/schema.prisma", "4ba91c581021fc5a11bac59761c3dedf4676ebe1444e12a343aba31e1d0c4f3d"],
+            ["prisma/migrations/migration_lock.toml", "99836963713b4f5b269ad49af0ed3d7b0b2e336115c2f92dc9ac683d139d0900"],
+            ["prisma/migrations/20261014000000_postgresql_init/migration.sql", "579bbc7dfd4b2a16d108f4addb44ae80d1494301460b3773a5b2301dd9fc282c"],
+            ["prisma/migrations/20261020152832_add_project_diaries/migration.sql", "0abd0cd9d72881641951106b14a36c58a236730516622872cc95154a6c8a2893"],
+          ]);
+          const migrationDirectories = readdirSync("prisma/migrations", { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort();
+          const expectedDirectories = [
+            "20261014000000_postgresql_init",
+            "20261020152832_add_project_diaries",
+          ];
+          if (JSON.stringify(migrationDirectories) !== JSON.stringify(expectedDirectories)) {
+            throw new Error("Unexpected Prisma migration directory set.");
+          }
+          for (const [file, expectedHash] of expectedFiles) {
+            const actualHash = createHash("sha256").update(readFileSync(file)).digest("hex");
+            if (actualHash !== expectedHash) {
+              throw new Error(`SHA-256 mismatch for ${file}.`);
+            }
+          }
+          NODE
+
+      - name: Set up Node.js 24.19.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+
+      - name: Enable pnpm 10.34.6
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.34.6 --activate
+          [[ "$(pnpm --version)" == "10.34.6" ]]
+
+      - name: Install locked dependencies and Prisma engines without database credentials
+        working-directory: target
+        shell: bash
+        env:
+          DATABASE_URL: postgresql://prisma_engine_check:unused@127.0.0.1:1/prisma_engine_check?schema=public&connect_timeout=1
+          DIRECT_URL: postgresql://prisma_engine_check:unused@127.0.0.1:1/prisma_engine_check?schema=public&connect_timeout=1
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Prisma CLI and Linux engines
+        working-directory: target
+        shell: bash
+        env:
+          DATABASE_URL: postgresql://prisma_engine_check:unused@127.0.0.1:1/prisma_engine_check?schema=public&connect_timeout=1
+          DIRECT_URL: postgresql://prisma_engine_check:unused@127.0.0.1:1/prisma_engine_check?schema=public&connect_timeout=1
+        run: |
+          set -euo pipefail
+          version_file="${RUNNER_TEMP}/prisma-version.json"
+          trap 'rm -f "${version_file}"' EXIT
+          pnpm exec prisma version --json > "${version_file}"
+          PRISMA_VERSION_FILE="${version_file}" node <<'NODE'
+          const { existsSync, readFileSync } = require("node:fs");
+          const { resolve } = require("node:path");
+          const { spawnSync } = require("node:child_process");
+
+          const output = readFileSync(process.env.PRISMA_VERSION_FILE, "utf8");
+          const jsonStart = output.indexOf("{");
+          if (jsonStart === -1) throw new Error("Prisma version did not return JSON.");
+          const version = JSON.parse(output.slice(jsonStart));
+          if (version.prisma !== "6.19.3") throw new Error("Unexpected Prisma CLI version.");
+          if (version["operating-system"] !== "linux") throw new Error("Prisma is not running on Linux.");
+
+          function enginePath(key, prefix) {
+            const value = version[key];
+            if (typeof value !== "string" || !value.startsWith(prefix)) {
+              throw new Error(`Prisma did not report the ${key}.`);
+            }
+            const match = value.match(/\(at (.+)\)$/);
+            if (!match) throw new Error(`Prisma did not report a path for the ${key}.`);
+            const path = resolve(match[1]);
+            if (!existsSync(path)) throw new Error(`The ${key} file is missing.`);
+            return path;
+          }
+
+          enginePath("query-engine-(node-api)", "libquery-engine ");
+          const schemaEngine = enginePath("schema-engine", "schema-engine-cli ");
+          const engineVersion = spawnSync(schemaEngine, ["--version"], {
+            encoding: "utf8",
+            timeout: 10_000,
+          });
+          if (engineVersion.status !== 0 || !engineVersion.stdout.includes("schema-engine")) {
+            throw new Error("The Prisma Schema Engine could not execute.");
+          }
+          NODE
+          pnpm exec prisma validate --schema prisma/schema.prisma
+
+      - name: Validate the test Direct URL identity
+        shell: bash
+        env:
+          NEON_TEST_DIRECT_URL: ${{ secrets.NEON_V24_TEST_DIRECT_URL }}
+          CONFIGURED_ENDPOINT_ID: ${{ vars.NEON_V24_TEST_ENDPOINT_ID }}
+          CONFIGURED_DATABASE: ${{ vars.NEON_V24_TEST_DATABASE }}
+          CONFIGURED_ROLE: ${{ vars.NEON_V24_TEST_ROLE }}
+          EXPECTED_ENDPOINT_ID: ep-silent-term-b37hgmn5
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const expectedEndpoint = process.env.EXPECTED_ENDPOINT_ID;
+          if (process.env.CONFIGURED_ENDPOINT_ID !== expectedEndpoint) {
+            throw new Error("The Environment Endpoint variable does not match the approved test endpoint.");
+          }
+          if (!process.env.CONFIGURED_DATABASE || !process.env.CONFIGURED_ROLE) {
+            throw new Error("The expected database name and role Environment variables are required.");
+          }
+          let url;
+          try {
+            url = new URL(process.env.NEON_TEST_DIRECT_URL);
+          } catch {
+            throw new Error("The test connection secret is not a valid URL.");
+          }
+          if (!new Set(["postgres:", "postgresql:"]).has(url.protocol)) {
+            throw new Error("The connection URL is not PostgreSQL.");
+          }
+          const host = url.hostname.toLowerCase();
+          const hostLabel = host.split(".")[0];
+          if (hostLabel !== expectedEndpoint || hostLabel.endsWith("-pooler") || !host.endsWith(".neon.tech")) {
+            throw new Error("The connection URL is not the approved Neon Direct endpoint.");
+          }
+          if (url.port && url.port !== "5432") {
+            throw new Error("The Direct URL uses an unexpected port.");
+          }
+          const database = decodeURIComponent(url.pathname.replace(/^\//, ""));
+          const role = decodeURIComponent(url.username);
+          if (database !== process.env.CONFIGURED_DATABASE || role !== process.env.CONFIGURED_ROLE) {
+            throw new Error("The connection URL database or role does not match the approved Environment variables.");
+          }
+          if (!url.password) {
+            throw new Error("The test connection secret has no password.");
+          }
+          if (url.hash) {
+            throw new Error("The Direct URL must not contain a fragment.");
+          }
+          const allowedParameters = new Set(["sslmode", "channel_binding"]);
+          for (const key of url.searchParams.keys()) {
+            if (!allowedParameters.has(key)) {
+              throw new Error("The Direct URL contains an unapproved connection parameter.");
+            }
+          }
+          const sslModes = url.searchParams.getAll("sslmode");
+          const channelBindings = url.searchParams.getAll("channel_binding");
+          if (
+            sslModes.length !== 1 || sslModes[0] !== "require" ||
+            channelBindings.length !== 1 || channelBindings[0] !== "require"
+          ) {
+            throw new Error("The Direct URL must require TLS and channel binding.");
+          }
+          NODE
+
+      - name: Require exactly the audited pending migration
+        working-directory: target
+        shell: bash
+        env:
+          NEON_TEST_DIRECT_URL: ${{ secrets.NEON_V24_TEST_DIRECT_URL }}
+          CONFIGURED_ENDPOINT_ID: ${{ vars.NEON_V24_TEST_ENDPOINT_ID }}
+          CONFIGURED_DATABASE: ${{ vars.NEON_V24_TEST_DATABASE }}
+          CONFIGURED_ROLE: ${{ vars.NEON_V24_TEST_ROLE }}
+          EXPECTED_ENDPOINT_ID: ep-silent-term-b37hgmn5
+          EXPECTED_PENDING_MIGRATION: 20261020152832_add_project_diaries
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { appendFileSync } = require("node:fs");
+          const { spawn } = require("node:child_process");
+
+          function fail(message) {
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Neon v2.4 migration preflight status\n\n- Result: failed\n- Reason: ${message}\n`);
+            console.error(message);
+            process.exit(1);
+          }
+
+          const expectedEndpoint = process.env.EXPECTED_ENDPOINT_ID;
+          if (process.env.CONFIGURED_ENDPOINT_ID !== expectedEndpoint) {
+            fail("Endpoint identity changed after the safety gate.");
+          }
+          let url;
+          try {
+            url = new URL(process.env.NEON_TEST_DIRECT_URL);
+          } catch {
+            fail("The test connection secret is not a valid URL.");
+          }
+          const host = url.hostname.toLowerCase();
+          if (host.split(".")[0] !== expectedEndpoint || !host.endsWith(".neon.tech")) {
+            fail("Direct endpoint identity changed after the safety gate.");
+          }
+          if (
+            decodeURIComponent(url.pathname.replace(/^\//, "")) !== process.env.CONFIGURED_DATABASE ||
+            decodeURIComponent(url.username) !== process.env.CONFIGURED_ROLE ||
+            url.searchParams.getAll("sslmode").length !== 1 ||
+            url.searchParams.get("sslmode") !== "require" ||
+            url.searchParams.getAll("channel_binding").length !== 1 ||
+            url.searchParams.get("channel_binding") !== "require"
+          ) {
+            fail("Connection identity or TLS settings changed after the safety gate.");
+          }
+          url.searchParams.set("connect_timeout", "15");
+          const connectionUrl = url.toString();
+          const child = spawn(
+            "./node_modules/.bin/prisma",
+            ["migrate", "status", "--schema", "prisma/schema.prisma"],
+            {
+              env: { ...process.env, DATABASE_URL: connectionUrl, DIRECT_URL: connectionUrl },
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          let output = "";
+          child.stdout.on("data", (chunk) => { output += chunk.toString(); });
+          child.stderr.on("data", (chunk) => { output += chunk.toString(); });
+          const timer = setTimeout(() => child.kill("SIGTERM"), 90_000);
+          child.on("error", () => {
+            clearTimeout(timer);
+            fail("Prisma CLI could not be started.");
+          });
+          child.on("close", (code, signal) => {
+            clearTimeout(timer);
+            if (signal) fail("Prisma migrate status exceeded its bounded execution time.");
+            const errorCodes = [...new Set(output.match(/\bP\d{4}\b/g) ?? [])];
+            const migrationIds = [...new Set(output.match(/\b20\d{12}_[A-Za-z0-9_-]+\b/g) ?? [])];
+            const lower = output.toLowerCase();
+            let result;
+            if (errorCodes.includes("P1001")) {
+              fail("Prisma reported P1001 while connecting to the approved test endpoint.");
+            } else if (errorCodes.length > 0) {
+              fail(`Prisma reported ${errorCodes.join(", ")}.`);
+            } else if (/migration(?:\(s\))?.*failed|failed.*migration|migration history.*diverg|diverg.*migration history/i.test(output)) {
+              fail("Prisma reported failed or divergent migration history.");
+            } else if (code === 0 && lower.includes("database schema is up to date")) {
+              fail("The target migration is not pending; refusing to deploy.");
+            } else if (
+              code === 1 &&
+              lower.includes("2 migrations found") &&
+              lower.includes("have not yet been applied") &&
+              migrationIds.length === 1 &&
+              migrationIds[0] === process.env.EXPECTED_PENDING_MIGRATION
+            ) {
+              result = "expected pending migration only";
+            } else {
+              fail(`Unknown Prisma migrate status result (exit code ${String(code)}).`);
+            }
+            appendFileSync(
+              process.env.GITHUB_STEP_SUMMARY,
+              `### Neon v2.4 migration preflight status\n\n- Result: ${result}\n- Prisma exit code: ${String(code)}\n- Target commit: 4e35966d5f4f2c47882afbc55ccecd191d871c0b\n`,
+            );
+            console.log(`Pre-deploy status verified: ${result}.`);
+          });
+          NODE
+
+      - name: Deploy exactly once to the approved Neon test Direct endpoint
+        working-directory: target
+        shell: bash
+        env:
+          NEON_TEST_DIRECT_URL: ${{ secrets.NEON_V24_TEST_DIRECT_URL }}
+          CONFIGURED_ENDPOINT_ID: ${{ vars.NEON_V24_TEST_ENDPOINT_ID }}
+          CONFIGURED_DATABASE: ${{ vars.NEON_V24_TEST_DATABASE }}
+          CONFIGURED_ROLE: ${{ vars.NEON_V24_TEST_ROLE }}
+          EXPECTED_ENDPOINT_ID: ep-silent-term-b37hgmn5
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { spawn } = require("node:child_process");
+          const { appendFileSync } = require("node:fs");
+          function fail(reason) {
+            console.error(reason);
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n### Test deploy\n- Result: failed or not confirmed\n- Reason: ${reason}\n- Automatic retry: no\n`);
+            process.exit(1);
+          }
+          let url;
+          try { url = new URL(process.env.NEON_TEST_DIRECT_URL); }
+          catch { fail("The test connection secret is not a valid URL."); }
+          const endpoint = process.env.EXPECTED_ENDPOINT_ID;
+          if (process.env.CONFIGURED_ENDPOINT_ID !== endpoint ||
+              !["postgres:", "postgresql:"].includes(url.protocol) ||
+              url.hostname.split(".")[0] !== endpoint ||
+              !url.hostname.endsWith(".neon.tech") ||
+              (url.port && url.port !== "5432") ||
+              decodeURIComponent(url.username) !== process.env.CONFIGURED_ROLE ||
+              decodeURIComponent(url.pathname.slice(1)) !== process.env.CONFIGURED_DATABASE ||
+              !url.password || url.hash ||
+              url.searchParams.getAll("sslmode").length !== 1 ||
+              url.searchParams.get("sslmode") !== "require" ||
+              url.searchParams.getAll("channel_binding").length !== 1 ||
+              url.searchParams.get("channel_binding") !== "require" ||
+              [...url.searchParams.keys()].some(key => !["sslmode", "channel_binding"].includes(key))) {
+            fail("The approved test Direct endpoint identity or TLS parameters do not match.");
+          }
+          url.searchParams.set("connect_timeout", "15");
+          const connection = url.toString();
+          const child = spawn("./node_modules/.bin/prisma", ["migrate", "deploy", "--schema", "prisma/schema.prisma"], {
+            env: { ...process.env, DATABASE_URL: connection, DIRECT_URL: connection },
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          let output = "";
+          let finished = false;
+          const timeout = setTimeout(() => { if (!finished) child.kill("SIGTERM"); }, 150_000);
+          child.stdout.on("data", chunk => { output += chunk.toString(); });
+          child.stderr.on("data", chunk => { output += chunk.toString(); });
+          child.on("error", () => { finished = true; clearTimeout(timeout); fail("Prisma deploy process could not start."); });
+          child.on("close", (code, signal) => {
+            finished = true;
+            clearTimeout(timeout);
+            if (signal) fail("Prisma deploy terminated or timed out; the migration outcome is UNKNOWN. Inspect test Neon migration history before any other action.");
+            if (code !== 0) fail(`Prisma deploy returned exit code ${String(code)}. Outcome must be checked in Neon; do not retry automatically.`);
+            if (!output.includes("20261020152832_add_project_diaries") || !/migration/i.test(output)) {
+              fail("Deploy output did not confirm the approved migration; inspect Neon manually.");
+            }
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, "\n### Test deploy\n- Prisma deploy exit code: 0\n- Target: approved v2.4 test Direct endpoint\n- Automatic retry: no\n- Migration history and preserved data: require independent verification\n");
+            console.log("Prisma test deploy process completed with exit code 0; verify the database separately.");
+          });
+          NODE
+
