@@ -364,9 +364,10 @@ jobs:
           node <<'NODE'
           const { spawnSync } = require('node:child_process');
           const { writeFileSync } = require('node:fs');
-          function fail() { throw new Error('Production read-only baseline failed. Do not deploy.'); }
+          function fail(reason) { throw new Error(`${reason} Do not deploy.`); }
           let u;
-          try { u = new URL(process.env.NEON_PROD_DIRECT_URL); } catch { fail(); }
+          try { u = new URL(process.env.NEON_PROD_DIRECT_URL); }
+          catch { fail('Production endpoint validation failed.'); }
           if (!['postgres:', 'postgresql:'].includes(u.protocol) ||
               u.hostname.split('.')[0] !== process.env.EXPECTED_ENDPOINT_ID ||
               !u.hostname.endsWith('.neon.tech') ||
@@ -377,7 +378,9 @@ jobs:
               !u.password || u.hash ||
               u.searchParams.getAll('sslmode').length !== 1 || u.searchParams.get('sslmode') !== 'require' ||
               u.searchParams.getAll('channel_binding').length !== 1 || u.searchParams.get('channel_binding') !== 'require' ||
-              [...u.searchParams.keys()].some(k => !['sslmode','channel_binding'].includes(k))) fail();
+              [...u.searchParams.keys()].some(k => !['sslmode','channel_binding'].includes(k))) {
+            fail('Production endpoint validation failed.');
+          }
           const sql = `SELECT (SELECT COUNT(*) FROM "User"), (SELECT COUNT(*) FROM "Diary"),
             (SELECT COUNT(*) FROM "Account"), (SELECT COUNT(*) FROM "Session"),
             (SELECT md5(COALESCE(string_agg(to_jsonb(d)::text, '|' ORDER BY d.id), '')) FROM "Diary" d)`;
@@ -389,9 +392,19 @@ jobs:
               PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
               PGOPTIONS:'-c default_transaction_read_only=on -c statement_timeout=15000'},
           });
-          if (result.error || result.status !== 0) fail();
+          if (result.error?.code === 'ETIMEDOUT' || /statement timeout|canceling statement due to/i.test(result.stderr || '')) {
+            fail('Production read-only baseline query timed out.');
+          }
+          if (result.error || result.status !== 0) {
+            if (/connection|ssl|tls|certificate|authentication|password|pg_hba/i.test(result.stderr || '')) {
+              fail('Production psql connection or TLS validation failed.');
+            }
+            fail('Production read-only SQL execution failed.');
+          }
           const values = result.stdout.trim().split('|');
-          if (values.length !== 5 || !values.slice(0,4).every(x => /^\d+$/.test(x)) || !/^[a-f0-9]{32}$/.test(values[4])) fail();
+          if (values.length !== 5 || !values.slice(0,4).every(x => /^\d+$/.test(x)) || !/^[a-f0-9]{32}$/.test(values[4])) {
+            fail('Production read-only baseline result parsing failed.');
+          }
           const [users, diaries, accounts, sessions] = values.slice(0,4).map(Number);
           const fingerprint = values[4];
           // Abort if production data changed since the snapshot and manual baseline checks.
