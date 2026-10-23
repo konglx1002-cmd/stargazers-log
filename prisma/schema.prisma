@@ -2,6 +2,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
+enum ProjectStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
@@ -20,6 +26,7 @@ model User {
   sessions      Session[]
   accounts      Account[]
   diaries       Diary[]
+  projects      Project[]
 }
 
 model Session {
@@ -79,4 +86,36 @@ model Diary {
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, date])
+}
+
+model Project {
+  id             String         @id @default(cuid())
+  userId         String
+  name           String
+  description    String         @default("")
+  status         ProjectStatus  @default(ACTIVE)
+  archivedAt     DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectDiaries ProjectDiary[]
+
+  @@unique([userId, id])
+  @@index([userId, archivedAt, status])
+}
+
+model ProjectDiary {
+  id             String   @id @default(cuid())
+  userId         String
+  projectId      String
+  title          String
+  entryDate      DateTime
+  completedTasks String
+  problems       String
+  nextPlan       String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  project        Project  @relation(fields: [userId, projectId], references: [userId, id], onDelete: Cascade)
+
+  @@index([userId, projectId, entryDate(sort: Desc), createdAt(sort: Desc), id])
 }

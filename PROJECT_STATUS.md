@@ -1,127 +1,53 @@
 # 科研成长日志项目状态
 
-更新日期：2026-10-13
+更新日期：2026-10-22。本文区分生产部署事实和本地待发布功能。
 
-## 项目概况
+## 生产状态
 
-科研成长日志是面向研究生、科研人员和工程师的个人成长记录工具。当前 MVP 已形成完整闭环：用户可以创建或更新当日日志、查看历史日志和详情，并通过关键词搜索过往记录。
+- 根据项目维护者确认，正式应用部署在 Render，使用 Neon PostgreSQL，并存在真实用户数据。
+- 已有功能包括 Better Auth 认证、个人设置与时区、每日 Diary、历史、搜索、Dashboard 及用户隔离。
+- 本次未访问生产应用或 Neon；Render 当前部署 commit、自动部署设置、Neon migration 历史及备份恢复状态尚未核实。
+- v2.4 Project、ProjectDiary 和 Dashboard 项目区域仅在本地完成，不代表已经上线。
 
-当前版本：`0.1.0`
+## 本地实现状态
 
-## 技术栈
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| 2 | ProjectStatus、Project、ProjectDiary 与增量 migration | 已提交 `33a899c` |
+| 3 | 项目管理、归档恢复、权限隔离 | 已提交 `b075da4` |
+| 4 | 项目独立日志、同日多篇、编辑检索、分页、归档并发保护 | 已提交 `263e726` |
+| 5A | Dashboard 最近 3 个未归档项目、测试与发布文档 | 本地实现，尚未发布；验证与提交结论见本阶段交付报告 |
+| 线上发布 | Neon 增量 migration、Render 应用发布、线上验收 | 未执行，需单独授权 |
 
-- Next.js 16（App Router）
-- React 19
-- TypeScript
-- Tailwind CSS 4
-- Prisma 6
-- SQLite
-- Node.js 内置测试运行器
-- ESLint
+Dashboard 保留原今日 Diary 与最近 3 篇 Diary，新增项目名称、中文状态、日志总数和最近日志日期；没有项目时引导创建。排序为 `COALESCE(MAX(ProjectDiary.entryDate), Project.createdAt) DESC`，再按项目 `createdAt DESC, id ASC`。归档项目不参与聚合。
 
-## 已完成功能
+## 代码与数据边界
 
-### 1. 当日日志
+- 原 Diary 继续使用 `@@unique([userId, date])`，每位用户每天最多一篇。
+- ProjectDiary 与 Diary 独立，同一项目同一天允许多篇；没有自动转换旧日志。
+- ProjectDiary 通过 `(userId, projectId)` 复合外键约束项目所有者。
+- 归档项目日志只读；事务内锁定项目行后检查归档状态，恢复不修改日志。
+- Dashboard 聚合只执行一条带用户条件的 SQL，最多返回 3 行，不加载项目描述、日志标题或正文。
+- 本阶段未改 Schema、历史 migration、认证配置或原 Diary 服务。
 
-- 展示当天日期。
-- 填写完成事项、遇到问题和下一步计划。
-- 创建和编辑当天日志。
-- 同一天仅保存一篇日志，重复保存时更新原记录。
-- 保存后显示成功状态，刷新页面后数据仍然存在。
+## Git 只读核对
 
-### 2. 历史日志
+阶段 5A 接手时，本地 `main` 位于 `263e726`。2026-10-22 使用 `git ls-remote --heads origin main` 核对 GitHub main 为 `d797164e5d3147fccce7dc0d3cb6e32f8013ab8c`；接手时本地领先该提交 3 个功能提交。
 
-- 按日期倒序展示全部日志。
-- 列表展示日期及各字段摘要。
-- 点击记录进入日志详情页面。
-- 详情页展示完整内容并可返回历史列表。
+本阶段按“完整验证通过后创建本地提交”的要求交付，不 push；当前提交状态以 `git log` 和交付报告为准。恢复本地数据库验证时再次只读核对远端，两次均因网络连接失败未完成；远端在上次成功核对后仍可能变化，正式发布前需重新核对。Render 是否跟随 GitHub main 自动部署未确认，不能把 push 当成无副作用的同步步骤。
 
-### 3. 日志搜索
+## 运行与验收
 
-- 支持关键词包含匹配。
-- 搜索范围包括 `completedTasks`、`problems` 和 `nextPlan`。
-- 搜索结果按日期倒序展示。
-- 结果可进入日志详情；无匹配内容时显示空结果提示。
+技术栈：Next.js 16、React 19、TypeScript、Tailwind CSS 4、Prisma 6、PostgreSQL、Better Auth、pnpm、GitHub Actions。`package.json` 的 `0.1.0` 是现有包版本，不等同于产品 v2.4 已发布。
 
-## 页面与接口
+检查命令：Prisma validate/generate、ESLint、`pnpm test:deploy`、`pnpm build`、`git diff --check`。集成测试只能显式指向本机或独立 CI PostgreSQL，测试会创建和删除专用 Schema；禁止使用生产连接。
 
-| 路径 | 用途 |
-| --- | --- |
-| `/` | 产品首页及主要功能入口 |
-| `/diary` | 创建或编辑当日日志 |
-| `/history` | 历史日志列表 |
-| `/diary/[id]` | 日志详情 |
-| `/search` | 日志关键词搜索 |
-| `GET /api/diary/today` | 获取当日日志 |
-| `POST/PUT /api/diary/today` | 创建或更新当日日志 |
-| `GET /api/diary` | 获取全部日志 |
-| `GET /api/diary/search?q=关键词` | 搜索日志 |
+阶段 5A 本地验证（2026-10-22，Node.js 24.21.0、Prisma 6.19.3、Docker PostgreSQL 17）：
 
-## 数据模型
+- Prisma validate、generate、ESLint、Next.js production build 与 `git diff --check` 均通过。
+- 全部自动化测试 18/18 通过（原有 17 项与新增 Dashboard 测试），无跳过；测试专用 Schema 已清理。
+- 覆盖旧认证与 Diary 回归、迁移前后 Diary 逐字段一致、项目隔离、同日多篇、归档行锁、筛选分页，以及 Dashboard 排序、计数和双用户隔离。
+- Node.js 直接加载 TypeScript 测试时有既有模块类型提示，不影响通过；未为消除提示修改包模块类型。
+- 手机浏览器人工验收、生产负载测试、线上冒烟与 Neon 备份恢复演练未执行，不能视为通过。
 
-当前仅有 `Diary` 模型，主要字段如下：
-
-- `id`：日志唯一标识。
-- `date`：日志日期，具有唯一约束。
-- `completedTasks`：完成事项。
-- `problems`：遇到问题。
-- `nextPlan`：下一步计划。
-- `content`：预留内容字段，当前功能未使用。
-- `createdAt`、`updatedAt`：创建和更新时间。
-
-## 项目结构
-
-```text
-src/
-  app/                 页面与 Route Handlers
-  components/          通用组件
-  features/diary/      日志业务逻辑、类型和格式化函数
-  lib/                 Prisma 数据库连接
-prisma/                Schema 与数据库迁移
-tests/                 日志集成测试
-```
-
-## 验证状态
-
-截至本次更新，以下检查均已通过：
-
-- ESLint 检查。
-- Next.js 生产构建。
-- 日志集成测试。
-- 当日日志创建、读取、更新及日期唯一性验证。
-- 历史列表排序与详情展示验证。
-- 三个日志字段的关键词搜索与空结果验证。
-
-## 本地运行
-
-```bash
-pnpm install
-pnpm db:generate
-pnpm db:migrate
-pnpm dev
-```
-
-默认开发地址为 `http://localhost:3000`。数据库连接由 `.env` 中的 `DATABASE_URL` 配置，当前使用 SQLite。
-
-常用验证命令：
-
-```bash
-pnpm lint
-pnpm test:diary
-pnpm build
-```
-
-## 尚未实现
-
-- 用户系统与多用户数据隔离。
-- 标签与项目管理。
-- 高级筛选和全文索引优化。
-- 数据统计与可视化。
-- AI 总结或 AI 搜索。
-- 部署与生产环境配置。
-
-## Git 状态
-
-- 当前分支：`main`。
-- 创建本文档前的最新功能提交：`6279767 Add diary keyword search`。
-- 本地分支创建本文档前领先 `origin/main` 6 个提交，相关提交尚未推送到远端。
+发布步骤、未确认项和手机清单见 [发布指南](docs/deployment.md)，数据库增量细节见 [安全迁移手册](docs/project-diary-migration.md)。

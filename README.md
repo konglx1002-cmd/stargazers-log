@@ -10,7 +10,9 @@
 - 遇到了什么问题？
 - 下一步准备做什么？
 
-项目从单用户 Diary MVP 演进为多人版本，目前已具备用户认证、数据隔离、用户时区和基础个人工作台，并完成 PostgreSQL 与自动化部署流程的工程适配。产品仍保持轻量，不包含统计分析、AI 总结、项目管理或多人协作功能。
+正式应用已部署在 Render，数据库为 Neon PostgreSQL，并存在真实用户数据（依据维护者确认）。生产已具备认证、每日 Diary、历史搜索、个人设置与基础 Dashboard。
+
+本地 v2.4 已完成科研项目、项目独立日志和 Dashboard 项目区域，正在阶段 5A 发布准备，**尚未上线**。下文功能列表描述当前仓库实现，不表示这些 v2.4 功能已在线提供。当前 Render live commit、自动部署设置和 Neon migration 状态仍需发布前核实。
 
 ## ✨ 核心功能
 
@@ -21,8 +23,10 @@
 - **关键词搜索**：在当前用户的完成事项、问题和下一步计划中进行包含搜索。
 - **用户时区**：按照用户设置的 IANA 时区判断“今天”，默认 `Asia/Shanghai`。
 - **个人设置**：修改用户名和时区，邮箱只读。
-- **个人 Dashboard**：展示今日记录状态、最近 3 篇日志和常用入口。
+- **个人 Dashboard**：保留今日状态与最近 3 篇 Diary；本地 v2.4 新增最多 3 个未归档项目、状态、日志总数和最近日志日期，按最近项目日志日期排序，无日志时回退项目创建时间。
 - **健康检查**：`GET /api/health` 使用轻量查询检查 PostgreSQL 连接状态。
+- **科研项目管理**：创建、查看、编辑项目，切换进行中/已暂停/已完成状态，归档与恢复；项目按用户隔离。
+- **项目独立日志（v2.4 阶段 4）**：每个项目同一天可创建多篇日志，支持标题、日期、三个正文栏、查看、编辑、日期筛选、关键词搜索与分页；归档后日志只读，恢复后可继续写入。
 
 ## 🧰 技术栈
 
@@ -46,23 +50,25 @@ Browser
   ▼
 Next.js App Router
   ├─ Pages / Server Components
-  ├─ Route Handlers (/api/auth, /api/diary, /api/settings, /api/health)
+  ├─ Route Handlers (/api/auth, /api/diary, /api/projects, /api/settings, /api/health)
   └─ Better Auth Session
         │
         ├─ current-user：从服务端 Session 获取用户身份
         │
-        └─ diary-service：统一处理 Diary 查询与写入
+        └─ diary-service / project-service / project-diary-service
               │
               ▼
         Prisma Client
               │
               ▼
-         PostgreSQL
+         Neon PostgreSQL（正式环境）
 ```
 
 Diary 页面、API、Dashboard、历史和搜索都通过服务端 Session 获得 `user.id`。Diary 数据访问集中在 `diary-service`，所有查询都带用户条件；客户端传入的用户 ID 不参与权限判断。
 
 数据库中 `User` 与 `Diary` 是一对多关系，`@@unique([userId, date])` 保证同一用户每天最多一篇日志，同时允许不同用户在同一天分别记录。
+
+本地 v2.4 的 ProjectDiary 与 Diary 独立，允许同项目同日多篇。Dashboard 项目区域在数据库内聚合计数与最近日期，仅返回 3 行，不逐项目发起查询或读取日志正文。
 
 更完整的设计说明见 [系统架构](docs/architecture.md) 与 [数据库设计](docs/database.md)。
 
@@ -81,6 +87,7 @@ Diary 页面、API、Dashboard、历史和搜索都通过服务端 Session 获�
 │  ├─ app/                  # 页面与 Route Handlers
 │  ├─ components/           # 导航、认证和设置组件
 │  ├─ features/diary/       # Diary 服务、类型和格式化逻辑
+│  ├─ features/project/     # Project、ProjectDiary 与 Dashboard 聚合
 │  └─ lib/                  # Prisma、Better Auth、当前用户和时区工具
 ├─ tests/                   # 认证、Diary、时区、健康检查和迁移测试
 ├─ docker-compose.yml       # 本地 PostgreSQL 17 开发环境
@@ -123,6 +130,8 @@ docker compose ps
 本地服务名为 `scientific-log-postgres`，使用 `postgres:17-alpine`，监听 `localhost:5433`。请等待状态变为 `healthy`。
 
 ### 4. 应用数据库 migration
+
+先确认终端变量与 `.env` 明确指向本机 Docker 数据库，不能使用生产 Neon 连接：
 
 ```bash
 pnpm db:migrate:deploy
@@ -176,7 +185,9 @@ pnpm db:migrate:dev
 pnpm db:migrate:deploy
 ```
 
-staging / production 只能执行 `migrate deploy`，不应运行 `migrate dev`。仓库还提供 SQLite → PostgreSQL 演练脚本，用于导出 `User`、`Account`、`Diary`，保留 ID 并校验数量、关联、日期、正文和时区；该流程当前仅完成本地演练，尚未迁移生产数据。
+staging / production 只能在独立审批后执行 `migrate deploy`，不能运行 `migrate dev`。v2.4 仅新增 `20261020152832_add_project_diaries`，阶段 3–5A 没有新增 migration。正式库是否已应用该 migration 尚未核实。
+
+SQLite → PostgreSQL 脚本是历史本地演练工具。当前生产已经使用 Neon，不应据此再次导入、转换或切换生产数据。
 
 ## ✅ 测试与质量检查
 
@@ -202,32 +213,32 @@ pnpm test:migration
 pnpm test:deployment
 ```
 
-集成测试需要可创建和删除 Schema 的 PostgreSQL 直连地址，可通过 `TEST_DATABASE_URL`、`DIRECT_URL` 或 `DATABASE_URL` 提供。
+集成测试需要可创建和删除 Schema 的独立 PostgreSQL 直连地址，优先显式设置 `TEST_DATABASE_URL`；测试辅助代码仍保留 `DIRECT_URL`、`DATABASE_URL` 回退，故运行前必须核实目标，禁止生产连接。测试会删除和重建专用测试 Schema。
 
 GitHub Actions 会在每次 `push` 和 `pull_request` 时使用 Node.js 24.x、pnpm 10.34.6 和临时 PostgreSQL，依次执行依赖安装、Prisma Client 生成、lint、`test:deploy` 和 build。
 
 ## ☁️ 部署架构
 
-目标 staging / production 架构为：
+正式部署架构为 Render + Neon；本次未访问生产控制台或数据库：
 
 ```text
 GitHub
   ├─ CI：lint + tests + build
-  └─ 手动 Migration Workflow
-        │  使用 DIRECT_URL
+  └─ 经单独审批的 migration 执行入口（不得假定 staging workflow 就是生产流程）
+        │  使用 DIRECT_URL，先完成迁移
         ▼
-Managed PostgreSQL
+Neon PostgreSQL
         ▲
         │  应用运行使用 DATABASE_URL
-Vercel / Next.js Node.js Runtime
+Render / Next.js Node.js Runtime
   ├─ Better Auth
   ├─ Prisma Client
   └─ GET /api/health
 ```
 
-推荐发布顺序：CI 通过 → 人工执行 `prisma migrate deploy` → 部署同一 commit → 检查 `/api/health` → 完成认证、Session、用户隔离、Diary、搜索和时区冒烟测试。
+发布顺序：核实并关闭 Render 自动部署 → 经授权同步审核代码并等待 CI → 核对备份和恢复演练 → 应用待执行 migration → 验证旧数据 → 手工发布同一 SHA → 业务与手机验收。
 
-当前仓库已经准备好 CI、手动 staging migration workflow、部署检查脚本和生产环境变量模板，但**尚未创建或连接任何云端资源，也尚未进行 production 部署**。完整流程见 [部署指南](docs/deployment.md)。
+Render 可能自动部署关联分支，当前开关未确认，因此不能把 push main 当成单纯同步代码。阶段 5A 没有 push、生产 migration、Render 发布或线上验收。完整门禁、回滚和手机检查见 [发布指南](docs/deployment.md)。
 
 ## 📌 当前完成情况
 
@@ -242,17 +253,20 @@ Vercel / Next.js Node.js Runtime
 - [x] SQLite → PostgreSQL 数据迁移本地演练
 - [x] 健康检查、部署检查与 GitHub Actions
 - [x] Docker Compose 本地 PostgreSQL 环境
-- [ ] 创建 staging 云资源并完成首次部署
-- [ ] 迁移 production 数据并完成正式上线
+- [x] 维护者确认正式应用已运行于 Render + Neon
+- [x] 本地 v2.4 项目与独立日志功能
+- [x] 本地 Dashboard 项目集成与发布方案
+- [ ] 核实生产 migration、自动部署与备份恢复状态
+- [ ] 经单独授权发布 v2.4 并完成线上及手机验收
 
 ## 🗺️ Roadmap
 
-### v2.2 云端化（进行中）
+### v2.4 发布准备（本地实现完成，待上线）
 
-- [ ] 配置独立的 staging PostgreSQL、应用域名与 Better Auth 密钥
-- [ ] 完成 Vercel staging 部署和上线后冒烟测试
-- [ ] 建立 production 备份、恢复与发布回滚流程
-- [ ] 在维护窗口完成最终数据迁移和 production 切换
+- [ ] 核实隔离 staging、正式域名与认证配置
+- [ ] 完成 Neon 备份恢复演练与增量 migration 核对
+- [ ] 核实 Render live commit、自动部署和回滚制品
+- [ ] 审批后按“数据库先迁移、应用后部署”发布
 - [ ] 补充错误监控与结构化日志
 
 ### 长期候选（未实现）
@@ -261,7 +275,7 @@ Vercel / Next.js Node.js Runtime
 - [ ] 历史进展、阻塞与下一步计划提炼
 - [ ] 用户私有 Diary 范围内的语义检索或问答
 
-以上 AI 方向仅为长期候选，需要先明确模型供应商、成本、隐私和数据保留策略。当前产品不提供 AI、统计图表、项目管理或多人协作能力。
+以上 AI 方向仅为长期候选，需要先明确模型供应商、成本、隐私和数据保留策略。当前产品不提供 AI、统计图表或多人协作能力。
 
 ## 📚 项目文档
 

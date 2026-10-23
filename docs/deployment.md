@@ -1,240 +1,133 @@
-# 部署指南
+# Render + Neon 发布指南与 v2.4 检查单
 
-本文记录 v2.2 云端化的部署流程。Phase 2 已完成 SQLite 到 PostgreSQL 的可重复迁移工具和本地 staging 等价演练，但尚未部署云端资源，也没有迁移生产数据。
+校准日期：2026-10-22。正式应用已部署在 Render，数据库为 Neon PostgreSQL，且存在真实数据（依据项目维护者确认）。v2.4 阶段 2–5A 的功能目前仅在本地完成，尚未生产发布。
 
-## 1. 版本要求
+本文是待审批的执行方案。阶段 5A 只做本地开发、隔离测试及公开资料核对；未访问 Neon、操作 Render、触发 migration workflow 或 push。
 
-- Node.js：`24.19.0`，以 `.nvmrc` 为准。
-- pnpm：`10.34.6`，以 `package.json` 的 `packageManager` 为准。该版本位于 Vercel 当前明确支持的 pnpm 10 范围内。
+## 1. 发布前尚未确认的事实
 
-生产构建当前显式使用 Next.js 官方支持的 Webpack 构建器。默认 Turbopack 在现有 Windows 验证环境启动 PostCSS worker 时发生内部错误，而相同源码使用 Webpack 可以稳定完成生产构建；后续升级 Next.js 后可重新评估。
+| 项目 | 当前结论 | 下一发布阶段的核对方式 |
+| --- | --- | --- |
+| GitHub main | 2026-10-22 上次成功只读核对为 `d797164e5d3147fccce7dc0d3cb6e32f8013ab8c`；恢复验证时再次核对因网络失败，未确认是否变化 | 发布前重新 `git ls-remote --heads origin main`，比对完整目标 SHA |
+| 本地提交 | 接手时 `main` 为 `263e726`，领先远端 3 个功能提交；5A 再新增本地提交 | `git status --short --branch`、`git log --oneline origin/main..HEAD`，重新核实远端追踪引用是否最新 |
+| Render live commit | 未确认，不根据 GitHub main 推断 | 在 Render Deploys 页面记录当前 live commit 和可回滚 deploy |
+| Render 分支与 Auto-Deploy | 未确认，仓库没有 Render 声明式配置 | 只读查看 Settings 中关联仓库、Branch、Auto-Deploy、构建/启动命令 |
+| Render 健康检查 | 未确认平台设置 | 确认 Health Check Path 为 `/api/health` |
+| Neon migration | 未查询生产库 | 获授权后只读核对 migration 表、DDL、索引及外键 |
+| Neon 恢复窗口与备份 | 未确认，不能假定套餐具备足够 PITR 窗口 | 查看实际项目设置和恢复权限，完成独立副本恢复演练 |
+| 手机与线上冒烟 | 未执行 | 按第 7、9 节逐项留存结果 |
 
-开始工作前确认版本：
+Render 可以在关联分支 push 后自动部署，也可配置等待 CI 或关闭自动部署。因此，未来即使只打算 push 代码，也必须先核实自动部署开关；等待 CI 并不等于等待数据库 migration。[Render 自动部署说明](https://render.com/docs/deploys)
 
-```bash
-node --version
-pnpm --version
-```
+## 2. 本地与 staging 验证
 
-## 2. 本地运行
-
-1. 安装依赖：
-
-   ```bash
-   pnpm install
-   ```
-
-   `package.json` 的 `postinstall` 会在依赖安装完成后自动执行 `prisma generate`。本地安装和 Vercel 安装阶段都使用这一流程，避免依赖缓存导致 Prisma Client 与 `schema.prisma` 不一致。需要单独重新生成时仍可执行 `pnpm db:generate`。
-
-2. 启动本地 PostgreSQL。可以使用系统 PostgreSQL，也可以使用 Prisma 官方本地开发服务：
-
-   ```bash
-   pnpm exec prisma dev --name scientific-growth-log
-   ```
-
-3. 从 `.env.example` 创建本地 `.env`，填写本地 PostgreSQL 连接和 Better Auth 开发密钥。
-
-   - `DATABASE_URL`：应用运行时连接。
-   - `DIRECT_URL`：Prisma migration 直连地址。
-   - 本地没有连接池时，两者可以相同。
-   - 使用 `prisma dev` 输出的 TCP 地址配合 Prisma 6 测试时，连接参数需要包含 `pgbouncer=true&connection_limit=1`，避免复用连接时的 prepared statement 冲突。
-
-4. 生成 Prisma Client 并部署已提交的初始 migration：
-
-   ```bash
-   pnpm db:generate
-   pnpm db:migrate:deploy
-   ```
-
-5. 启动开发服务器：
-
-   ```bash
-   pnpm dev
-   ```
-
-后续修改 Prisma Schema 时使用 `pnpm db:migrate:dev` 创建新的 PostgreSQL migration。`pnpm db:migrate` 当前保留为该命令的兼容别名。
-
-集成测试需要一个可创建和删除 Schema 的本地 PostgreSQL 连接。运行测试前，将 `TEST_DATABASE_URL`、`DIRECT_URL` 或 `DATABASE_URL` 之一设置为直连 `postgresql://` URL；测试会创建隔离 Schema、运行 `prisma migrate deploy`，结束后删除测试 Schema。
-
-## 3. Staging 流程
-
-Phase 2 只完成本地 staging 等价演练，不执行实际云端 staging 部署。后续 staging 应按以下顺序进行：
-
-1. 创建与 production 隔离的应用、数据库、域名和 Better Auth 密钥。
-2. 根据 `.env.production.example` 在部署平台设置环境变量，不上传 `.env` 文件。
-3. 安装锁定依赖并运行 `pnpm db:generate`。
-4. 对 staging 数据库运行 `pnpm db:migrate:deploy`。
-5. 运行 lint、全部测试和生产构建。
-6. 部署 Next.js，并验证注册、登录、Session、设置、Dashboard、Diary 隔离、搜索和时区边界。
-7. 按“SQLite → PostgreSQL 迁移演练”执行导出、导入和自动校验，再完成双用户业务冒烟测试。
-
-Staging 不得复用 production 数据库、密钥或正式用户数据。
-
-部署平台的健康检查路径配置为 `GET /api/health`。响应 `200` 表示应用可以连接 PostgreSQL；响应 `503` 表示数据库连接不可用，此时实例不应接收流量。该检查只执行 `SELECT 1`，不依赖登录状态，也不读取业务数据。
-
-首次部署前执行统一部署回归：
+本地环境见 [development.md](development.md)。使用仓库 Docker PostgreSQL，确认容器健康，并在每条测试命令进程中显式设置本机数据库变量。不要让 Prisma 或测试回退到来源未知的 `.env`。
 
 ```bash
+pnpm exec prisma validate
+pnpm exec prisma generate
 pnpm lint
 pnpm test:deploy
 pnpm build
+git diff --check
 ```
 
-`test:deploy` 串行运行部署配置、健康检查、认证、Diary 隔离、时区和数据迁移测试。串行执行可以避免多个集成测试同时初始化 PostgreSQL Schema。测试环境需要通过 `TEST_DATABASE_URL`、`DIRECT_URL` 或 `DATABASE_URL` 提供可创建和删除 Schema 的 PostgreSQL 直连地址。
+集成测试会创建、迁移并删除专用 Schema，不能运行在 Neon production 上。CI 使用临时 PostgreSQL service container；完整测试包含原有 17 项回归及新 Dashboard 测试。
 
-## 4. Production 部署流程
+staging 必须使用独立应用、数据库/分支和认证密钥。若为恢复演练复制了真实数据，应限制访问，不公开演练应用，不把账号、密码哈希、Session 或正文放入日志或 CI artifacts。
 
-PostgreSQL 适配及迁移演练完成后，production 发布顺序应为：
+## 3. Neon migration 核对与备份恢复
 
-1. 确认数据库备份、维护窗口和回滚条件。
-2. 在部署平台设置 production 环境变量。
-3. 运行 `pnpm install --frozen-lockfile` 和 `pnpm db:generate`。
-4. 运行 lint、全部测试和 `pnpm build`。
-5. 由单独的发布步骤运行 `pnpm db:migrate:deploy`，不要在应用实例启动时运行 migration。
-6. 部署 Next.js Node.js 应用。
-7. 完成健康检查及认证、用户隔离和 Diary 读写冒烟测试后再开放流量。
+以下所有生产操作留待单独授权后执行：
 
-生产环境禁止使用 `prisma migrate dev`。该命令会创建开发 migration，并依赖 shadow database；生产环境只应用已经审核并提交的 migration。
+- [ ] 确认 `DATABASE_URL` 为应用连接池地址、`DIRECT_URL` 为同一 Neon 目标的直连地址；凭据由受控环境注入，不粘贴或打印连接字符串。
+- [ ] 运行只读 `prisma migrate status` 核对迁移历史。该命令不等于完整 Schema 漂移验证。
+- [ ] 只读查看 `_prisma_migrations` 的 `migration_name`、`checksum`、`finished_at`、`rolled_back_at`，与目标 commit 的迁移文件核对。
+- [ ] 确认基线 `20261014000000_postgresql_init` 状态正常；判断 `20261020152832_add_project_diaries` 是待执行还是已执行，不能重复导入或清理已有表。
+- [ ] 对照 migration SQL 检查实际表、列、唯一约束、索引和复合外键；若历史或结构不一致，停止发布，不能 reset、db push 或自动 resolve。
+- [ ] 在短暂停写或一致性快照下，记录 User、Account、Session、Diary 数量和逐用户 Diary 数量，生成覆盖 Diary ID、日期、三个正文栏、content、时间戳的受控校验摘要。
+- [ ] 核实 Neon 实际可恢复时间窗口，记录发布前恢复点 T0。恢复能力受实际配置约束，不假定无限历史保留。[Neon 恢复说明](https://neon.com/docs/postgres/backup-restore/branch-restore)
+- [ ] 使用受控凭据制作 PostgreSQL 自定义格式备份，存入加密、限制访问的仓库外位置，记录校验和。不得把包含认证数据的备份提交到 Git。
+- [ ] 从 T0 创建独立恢复分支/数据库，或将备份恢复到独立目标；不直接覆盖生产。比较数量、ID、日期和正文摘要，并验证两位用户认证与隔离，记录演练耗时和可接受数据损失窗口。
+- [ ] 在隔离目标演练 migration 和待发布应用，保留不含敏感数据的结果。
 
-## 5. 环境变量
+阶段 5A 没有执行以上生产操作，也没有实测当前 Neon 的备份恢复能力。增量 SQL 与恢复细节见 [project-diary-migration.md](project-diary-migration.md)。SQLite 导出/导入脚本是历史演练工具，不用于本次 Neon 增量发布；不得将现有生产数据再次导入空库或切换到未确认数据库。
 
-| 变量 | 用途 |
-| --- | --- |
-| `DATABASE_URL` | 应用运行时 PostgreSQL 连接；云端建议使用连接池地址 |
-| `DIRECT_URL` | Prisma migration 和管理操作使用的 PostgreSQL 直连地址 |
-| `BETTER_AUTH_SECRET` | Better Auth 生产密钥，至少 32 个高熵字符 |
-| `BETTER_AUTH_URL` | 应用唯一的正式 HTTPS Origin |
+## 4. 发布门禁与先后顺序
 
-所有环境变量由部署平台管理。不得提交真实数据库凭据或 Better Auth 密钥。开发、staging、production 必须使用不同的数据库和密钥。
+只有阶段 5A 审核通过并另行获得生产发布授权后，才执行下列步骤：
 
-## 6. 部署前工程检查
+1. 冻结目标完整 SHA，确认本地状态干净及全部验证通过。
+2. 先在 Render 核实并关闭关联分支的自动部署，确认无排队的待发布任务；记录旧 live commit、环境配置和可用回滚制品。这是未来发布操作，本阶段未更改开关。
+3. 在批准的 GitHub 发布流程中同步审核过的 commit，等待该 SHA 的 CI 全绿。push 也需要单独授权，不能只依据本地提交已完成便执行。
+4. 核对 Neon 历史、DDL、备份及演练结果；确定是否确有待应用 migration。
+5. 若有待执行迁移，通过唯一受审批的执行入口，在直连凭据环境中运行 `pnpm db:migrate:deploy`。若已应用则跳过，不能重放历史 SQL。禁止生产 `migrate dev`、`db push`、`migrate reset`。
+6. 检查 migration 状态和实际约束，比较旧数据数量、ID 与摘要；验证原应用仍可工作。首次增量新表应为空，若表已有数据则先查明来源并保留，不得清空。
+7. 执行 `pnpm check:deployment`。它检查必需变量、Client 和 migration 状态，不替代备份、Schema 漂移检查或业务验收。
+8. 人工发布相同 SHA 到 Render，确认实际 live commit 一致。
+9. 完成第 7 节验收后才结束发布观察；是否重新启用自动部署另行决定，不能自动恢复开关。
 
-- Node.js 使用 `.nvmrc` 指定的 24.x，并在 Vercel 项目设置中选择 Node.js 24.x。
-- 使用仓库声明的 pnpm 10.34.6 和已提交的 `pnpm-lock.yaml`，安装时启用 frozen lockfile。
-- 确认安装日志包含成功的 `prisma generate`；不要依赖旧的 `node_modules` 或 Vercel 依赖缓存。
-- 确认四个 staging 环境变量均已设置，且 `DATABASE_URL` 使用连接池地址、`DIRECT_URL` 使用直连地址。
-- 在部署应用前，由独立发布步骤执行 `pnpm db:migrate:deploy`，禁止在应用启动时执行 migration。
-- 执行 `pnpm lint`、`pnpm test:deploy` 和 `pnpm build`，任一失败都停止部署。
-- 部署后先验证 `GET /api/health`，再执行认证、Session、时区和 Diary 用户隔离冒烟测试。
+数据库应先扩展，应用后发布。本次 migration 只新增 ProjectStatus、Project、ProjectDiary，不变更旧 Diary 和 Better Auth 表，旧应用可继续使用原结构。
 
-完成 staging migration 后，可以在注入四个部署环境变量的受控终端中运行：
+## 5. Render 构建、启动及工作流
 
-```bash
-pnpm check:deployment
-```
+以下是建议配置，不能视为已核对当前生产设置：
 
-该命令只检查必需变量是否存在、Prisma Client 是否已生成，以及数据库 migration 是否全部应用。它不会执行 migration，也不会输出环境变量值或 Prisma 连接信息。检查失败时应先修复连接或运行人工 migration workflow，不能绕过检查直接部署。
+- Node.js 按 `.nvmrc` 固定版本；pnpm 为 `package.json` 指定的 `10.34.6`。
+- 安装使用 `pnpm install --frozen-lockfile`，postinstall 会执行 `prisma generate`，构建使用 `pnpm build`。
+- 启动使用 `pnpm start`，确认 Next.js 实际监听 Render 的 `PORT` 及 `0.0.0.0`；不要硬编码本机端口。
+- 健康检查路径 `/api/health`；只返回数据库可用状态，不读取业务数据或输出错误连接详情。
+- 四个受控环境变量为 DATABASE_URL、DIRECT_URL、BETTER_AUTH_SECRET、BETTER_AUTH_URL；保留现有认证密钥与正式 Origin，避免无意使 Session 失效。
+- 构建和启动命令都不执行 migration。Render Free 不应被假定具备付费服务的 pre-deploy command；迁移通过独立审批入口执行。[Render 部署能力](https://render.com/docs/deploys)
 
-## 7. GitHub Actions
+`.github/workflows/ci.yml` 在 push/PR 时检查临时 PostgreSQL、lint、测试和 build，不负责生产迁移或 Render 发布。`.github/workflows/migrate.yml` 仅为手动 `workflow_dispatch` 的 `staging` 工作流，Secret 的实际目标未核实；不能用它假装 production 发布步骤，也不能把生产 Secret 填入 staging。
 
-### CI
+## 6. 发布失败与回滚
 
-`.github/workflows/ci.yml` 在每次 `push` 和 `pull_request` 时自动执行。流程固定使用 Node.js 24.x、pnpm 10.34.6 和临时 PostgreSQL 16 service container，依次运行：
+- 备份或恢复演练未通过：不执行 migration 或应用发布。
+- migration 失败：停止应用发布，记录失败步骤，核对部分已执行 DDL 和 migration 状态；不得 reset、删表或盲目修改 migration 记录。恢复/前向修复方案需重新审核。
+- 数据库迁移成功、应用失败：优先保持新增表和历史记录，回滚到事先确认可用的 Render deploy/旧 SHA，不执行向下删表迁移。
+- 回滚前核对可用构建制品以及环境变量、构建命令、Origin 是否匹配。Render 的回滚制品保留有限，Free 仅支持最近两个先前部署，不能假设任意旧 SHA 都有现成制品。[Render Free 限制](https://render.com/docs/free)
+- Render Dashboard 回滚会关闭自动部署，API 回滚不会；发布操作者仍需核实实际开关，防止后续 push 再次部署故障版本。[Render 回滚说明](https://render.com/docs/rollbacks)
+- 若发生数据损坏，在受控停写窗口恢复到独立副本并完成一致性和双用户验证，再审批流量/连接切换；评估 T0 之后的新写入，不能通过恢复旧快照无声丢弃这些数据。
+- 应用回滚不会自动恢复数据库，Neon 恢复也不会自动回滚 Render。新增项目日志在应用回滚后可能暂时不可见，应保留等待修复版恢复访问。
 
-1. `pnpm install --frozen-lockfile`
-2. `pnpm exec prisma generate`
-3. `pnpm lint`
-4. `pnpm test:deploy`
-5. `pnpm build`
+## 7. 发布后业务验收清单
 
-CI 数据库只存在于当前 GitHub Actions Job，不连接 staging 或 production。工作流内的 Better Auth 配置同样是一次性的测试值，不是部署 Secret。
+仅在获准的发布阶段使用两个专用验收账号，不查询其他真实用户数据：
 
-### 人工 migration 发布
+- [ ] `/api/health` 返回 200，live commit 为目标 SHA，错误日志没有连接信息或密钥。
+- [ ] 注册两位用户、登录、刷新保持 Session、退出失效、重新登录成功。
+- [ ] 原 Diary 创建/编辑仍是同用户同日一篇；History、详情、Search、Settings 和时区边界正确。
+- [ ] 项目创建、重名、编辑、三种状态、归档恢复均正常。
+- [ ] 同项目同一天创建 3 篇不同 ID 的 ProjectDiary，跨项目不串数据。
+- [ ] 项目日志查看、编辑单篇、补写历史日期、日期与四栏关键词组合筛选、分页正确。
+- [ ] 归档项目可读、不可新增或编辑；恢复后可写，原数据一致；并发保护先在隔离环境验证，生产只做受控业务冒烟。
+- [ ] Dashboard 保留今日/最近 Diary；项目最多 3 个，计数、最近日期、无日志回退和归档排除正确。
+- [ ] 用户 A 不能访问/修改用户 B 的项目及日志；同用户日志与错误项目 ID 组合返回 404；匿名 API 返回 401。
+- [ ] 记录验收数据的归属、结果和异常，不为了清理测试而删除真实用户或重置数据库。
 
-`.github/workflows/migrate.yml` 只支持在 GitHub Actions 页面通过 `workflow_dispatch` 人工触发，并固定使用名为 `staging` 的 GitHub Environment。创建云资源后，需要在该 Environment 中配置：
+## 8. Render Free 与查询风险
 
-- `DATABASE_URL`：staging 应用使用的 PostgreSQL 连接池地址。
-- `DIRECT_URL`：staging migration 使用的 PostgreSQL 直连地址。
+- Free 实例空闲后会休眠，下一次访问存在冷启动延迟；Neon 计算唤醒还可能增加数据库首请求耗时。区分冷启动与热请求，不将冷启动一律诊断为业务故障。[Render Free](https://render.com/docs/free)
+- 实例 CPU、内存、流量、构建额度及数据库连接预算应在实际控制台核实；没有进行生产负载测试，不承诺并发容量或响应时间。
+- Dashboard 项目区域单次聚合，只返回 3 行；没有 N+1，不读项目描述和日志正文。准确计数和 MAX 日期仍需处理该用户未归档项目的日志行，数据增长后应在隔离环境使用 EXPLAIN 分析，不把 LIMIT 3 误写成“只扫描 3 行”。
+- 项目日志列表最多获取 21 行用于 20 条分页；关键词包含搜索、大页码偏移及旧 Diary/项目全部列表仍可能在大数据量下变慢。阶段 5A 没有改这些业务规则，发布前用代表性隔离数据测量。
+- 归档与写入在单项目行锁上串行，数据库连接和事务等待需观察；超时应失败回滚，不通过跳过归档检查提高吞吐。
+- 使用现有 Prisma Client 复用与 Neon 应用连接池，合理核实实际连接预算，不因本地通过就提高生产连接数。
+- Render 文件系统不是持久数据备份；不要把数据库、用户附件或恢复备份存入临时实例目录。
 
-工作流不会把密钥写入仓库文件。它先验证 Prisma Schema、展示部署前 migration 状态，再执行 `prisma migrate deploy`，最后要求 migration 状态正常。由于存在待应用 migration 时 `prisma migrate status` 可能返回非零退出码，部署前状态步骤允许继续；`migrate deploy` 或最终状态检查失败仍会使整个 Job 失败。
+## 9. 手机浏览器人工验收（待执行）
 
-同一时间只允许一个 staging migration Job 运行，且新触发的 Job 不会取消正在执行的 migration。首次启用时，建议为 `staging` Environment 增加 required reviewer，避免误触发。不要把 production 数据库 Secret 配置到这个 Environment。
+- [ ] iOS Safari / Android Chrome，窄屏与横竖屏，无水平溢出；长项目名、标题和正文正常换行。
+- [ ] Dashboard 今日 Diary、最近 Diary、我的科研项目依次清晰，项目卡片与全部/创建入口可点。
+- [ ] 登录、注册、退出、Session 过期提示和回到登录页面可用。
+- [ ] 新建/编辑 ProjectDiary 时日期控件可修改历史日期，输入法与软键盘不遮挡保存反馈。
+- [ ] 同一天 3 篇日志独立显示，编辑只影响选中日志，返回所属项目正确。
+- [ ] 日期筛选、关键词输入、清除与翻页保留筛选条件；空结果文案正确。
+- [ ] 归档后不显示可操作的日志新增/编辑入口，直接访问只读；恢复后入口恢复。
+- [ ] 弱网、保存失败、重复点击、冷启动及页面刷新有可理解反馈，不把失败误报为成功。
 
-## 8. Vercel 部署流程
+## 10. 本阶段结论边界
 
-首次 staging 部署按以下顺序进行：
-
-1. CI 在目标 commit 上全部通过。
-2. 在 GitHub `staging` Environment 配置两条数据库 Secret。
-3. 人工运行 `Staging Database Migration` workflow，并确认最终 migration 状态检查通过。
-4. 在安全环境中注入 `DATABASE_URL`、`DIRECT_URL`、`BETTER_AUTH_SECRET`、`BETTER_AUTH_URL`，运行 `pnpm check:deployment`。
-5. 由 Vercel 部署同一个 commit。依赖安装阶段会通过 `postinstall` 自动生成 Prisma Client；Vercel Build 只运行 `pnpm build`，不执行 migration。
-6. 部署成功后先检查 `GET /api/health`，再验证注册、登录、Session、用户设置、时区、Dashboard、Diary 隔离、历史和搜索。
-
-Vercel staging 项目仍需单独配置四个环境变量。GitHub Environment Secret 不会自动同步到 Vercel，两个平台必须分别维护，但值应指向同一套 staging 资源。应用部署失败时不得回滚数据库 migration；应修复或回滚应用，数据库变更必须通过新的前向 migration 处理。
-
-## 9. 数据迁移注意事项
-
-- 当前生效历史位于 `prisma/migrations`，只包含 PostgreSQL migration。
-- 原 SQLite SQL 原样归档在 `prisma/migrations-sqlite-legacy`，不得对 PostgreSQL 执行。
-- PostgreSQL 初始 migration 已建立，但它只创建空结构，不复制 SQLite 数据。
-- 正式迁移前先复制并校验 SQLite 文件，迁移期间暂停写入。
-- 必须保留 `User`、`Account`、`Diary` 的 ID、关联关系、密码哈希、日期、时区和正文内容。
-- MVP 推荐不迁移 `Session` 和 `Verification`，切换后要求用户重新登录；最终策略需在迁移实现前确认。
-- 校验至少包括表数量、ID 集合、逐用户 Diary 数量、`(userId, date)` 唯一性、外键完整性和关键内容摘要。
-- 在 staging 至少完成一次可重复的全量迁移演练，再安排 production 切换。
-- PostgreSQL 开始接受新写入后，不能仅靠切换应用版本回滚到 SQLite；应在开放写入前完成最终验证。
-
-## 10. SQLite → PostgreSQL 迁移演练
-
-Phase 2 提供三个独立命令：
-
-| 命令 | 作用 |
-| --- | --- |
-| `pnpm migration:export:sqlite` | 从 SQLite 只读导出 `User`、`Account`、`Diary` |
-| `pnpm migration:import:postgres` | 在单个事务中导入空的 PostgreSQL 目标库 |
-| `pnpm migration:verify` | 逐项比较导出快照与 PostgreSQL 数据 |
-
-默认读取 `prisma/dev.db`，默认快照写入 `migration-data/sqlite-export.json`。可通过 `SQLITE_DATABASE_PATH` 和 `MIGRATION_EXPORT_PATH` 指定演练文件。导入和校验优先使用 `DIRECT_URL`，没有设置时使用 `DATABASE_URL`；这两个命令必须使用 PostgreSQL 直连 URL。
-
-迁移快照包含邮箱、密码哈希以及可能存在的 Account 令牌，属于敏感文件。`migration-data/` 已被 Git 忽略，但演练时仍应放在受控临时目录，限制访问，并在校验完成后安全删除。不得上传到制品仓库或日志系统。
-
-### 演练步骤
-
-1. 暂停源 SQLite 的写入，复制数据库文件，并记录副本的校验和。所有导出操作针对副本执行，不直接操作运行中的文件。
-2. 创建全新的 staging PostgreSQL 数据库或 Schema，设置 `DATABASE_URL` 和 `DIRECT_URL`，然后执行：
-
-   ```bash
-   pnpm db:migrate:deploy
-   ```
-
-3. 指向 SQLite 副本并导出：
-
-   ```bash
-   SQLITE_DATABASE_PATH=/secure/path/source.db \
-   MIGRATION_EXPORT_PATH=/secure/path/sqlite-export.json \
-   pnpm migration:export:sqlite
-   ```
-
-4. 保持相同 `MIGRATION_EXPORT_PATH`，指向 staging PostgreSQL 直连地址并导入：
-
-   ```bash
-   DIRECT_URL=postgresql://... \
-   MIGRATION_EXPORT_PATH=/secure/path/sqlite-export.json \
-   pnpm migration:import:postgres
-   ```
-
-   导入器要求 `User`、`Account`、`Diary`、`Session`、`Verification` 全部为空；任一表已有数据都会停止。`User.id`、`Account.id` 和 `Diary.id` 按原值写入，不重新生成。
-
-5. 使用同一快照和 PostgreSQL 地址执行：
-
-   ```bash
-   DIRECT_URL=postgresql://... \
-   MIGRATION_EXPORT_PATH=/secure/path/sqlite-export.json \
-   pnpm migration:verify
-   ```
-
-6. 只有校验返回 `verified: true` 后，才启动 staging 应用。用至少两个已迁移账号验证登录、Session 新建、Diary 隔离、Dashboard、搜索、历史和用户时区。
-7. 删除迁移快照，并保留不含凭据的数量、校验结论、演练时间和版本记录。
-
-### 自动校验范围
-
-- `User`、`Account`、`Diary` 数量及完整 ID 集合。
-- `Diary.userId` 关系、日期、三个结构化内容字段、完整正文和时间戳。
-- 用户名、邮箱、邮箱验证状态、头像、`timeZone` 和时间戳。
-- Account 与 User 的关系、凭据哈希和现有可空字段。
-- PostgreSQL 中 `Session` 与 `Verification` 保持为空。
-
-`Session` 和 `Verification` 不进入快照，也不导入 PostgreSQL。迁移后的首次访问要求用户重新登录，新 Session 由 Better Auth 在 PostgreSQL 中创建。
-
-若导入或校验失败，不在目标库上手工修补数据。删除本次 staging 数据库或 Schema，修复原因后从 migration deploy 和导入步骤重新开始。Phase 2 的本地演练不代表 production 已迁移，也不授权生产切换。
+Render + Neon 是维护者提供的真实部署背景；公开平台文档只用于核对平台能力，不能证明该应用的实际开关、套餐、备份或部署 SHA。上述生产核对、恢复演练、手机人工验收与线上冒烟均未在阶段 5A 执行。

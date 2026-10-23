@@ -1,5 +1,7 @@
 # API 说明
 
+本文描述当前本地代码；v2.4 项目及 Dashboard 集成功能尚未发布到 Render，不能据此判断线上已提供这些接口。
+
 ## 1. 通用约定
 
 - Diary API 和用户设置 API 使用 JSON。
@@ -7,6 +9,63 @@
 - 未登录访问 Diary API 返回 `401` 和 `{ "message": "请先登录" }`。
 - 客户端不需要、也不能通过传入 `userId` 指定数据归属。
 - 当前没有公开的 Diary 删除 API，也没有单独的 Diary 详情 JSON API。
+
+## v2.4 科研项目管理（阶段 3）
+
+所有 Project API 使用 Better Auth Session；未登录返回 `401`。项目详情和更新只查询当前用户，不存在和其他用户的项目均返回 `404` 与 `{ "message": "项目不存在" }`。响应不包含 `userId`。
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `GET /api/projects` | 返回 `{ "projects": [...] }`，默认仅未归档项目 |
+| `GET /api/projects?archived=true` | 仅返回已归档项目；`false` 等价于默认，其余值返回 `400` |
+| `POST /api/projects` | 接收 `name` 和可选 `description`，返回 `201` 与 `{ "project": {...} }` |
+| `GET /api/projects/[id]` | 读取当前用户项目，已归档项目也可读取 |
+| `PATCH /api/projects/[id]` | 更新一个或多个 `name`、`description`、`status`、`archived` 字段，返回 `{ "project": {...} }` |
+
+项目返回字段：`id`、`name`、`description`、`status`、`archivedAt`、`createdAt`、`updatedAt`。时间为 ISO 字符串，未归档时 `archivedAt` 为 `null`。列表按 `updatedAt DESC, id ASC` 稳定排序。
+
+校验规则：
+
+- `name` 去除首尾空白后不能为空，最多 100 个 UTF-16 代码单元，与 HTML `maxLength` 一致；允许同一用户重名。
+- `description` 必须是字符串，最多 5000 个 UTF-16 代码单元；省略时默认空字符串。
+- 新建默认状态为 `ACTIVE`，创建请求只接受 `name`、`description`。
+- 更新 `status` 只能为 `ACTIVE`、`PAUSED`、`COMPLETED`。
+- `archived` 只能为布尔值；`true` 由服务端记录当前归档时间，`false` 恢复为 `null`，不改变项目状态和日志。
+- 不接受 `userId`、`id`、`archivedAt` 或其他未知字段。空更新、非法 JSON、数组、非法字段类型和超长输入返回 `400`。
+- 未实现 `DELETE`，请求会返回 `405`。归档与恢复不删除 Project、ProjectDiary 或原 Diary。
+
+页面：`/projects`、`/projects/new`、`/projects/[id]`、`/projects/[id]/edit`。所有页面服务端鉴权；未登录重定向 `/login`，他人项目和不存在的项目返回 404。列表通过 `/projects?archived=true` 单独查看已归档项目。
+
+## v2.4 项目独立日志（阶段 4）
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `GET /api/projects/[id]/diaries` | 当前项目日志列表，返回 `diaries`、`page`、`pageSize`、`hasNext` |
+| `POST /api/projects/[id]/diaries` | 每次新建独立日志，返回 `201` 和 `{ "diary": {...} }` |
+| `GET /api/projects/[id]/diaries/[diaryId]` | 当前用户、当前项目内指定日志 |
+| `PATCH /api/projects/[id]/diaries/[diaryId]` | 只更新指定日志，返回 `{ "diary": {...} }` |
+
+创建字段：`title`、`completedTasks`、`problems`、`nextPlan` 都必须为字符串；`entryDate` 可省略，省略时根据 Session 用户 IANA 时区计算日期。无效的旧用户时区回退 `Asia/Shanghai`。编辑可以提交上述字段的任意非空子集。
+
+- 标题去除首尾空格后必填，最多 200 个 UTF-16 代码单元；三个正文栏分别最多 20,000 个 UTF-16 代码单元，可为空文本，前后端共用校验函数和长度常量。
+- 日期只接受 `0001-01-01` 至 `9999-12-31` 的真实 `YYYY-MM-DD` 日期，允许历史日期，不接受日期时间字符串、溢出日期或无效闰日。以相应 UTC 零点保存日期键，实际创建时刻另存 `createdAt`。
+- 不接受 `userId`、`projectId`、`id`、时间戳或其他未知字段。非法请求返回 `400`。
+- 创建使用 `create`，没有按日期 upsert；同项目同日允许多篇。编辑同时限定 `id`、`userId`、`projectId`。
+- 所有 API 未登录返回 `401`；他人项目、他人日志、不匹配的项目/日志组合和不存在资源统一 `404`。
+- 归档项目可读取和搜索日志；新增或编辑返回 `409`。恢复归档不修改已有日志。ACTIVE、PAUSED、COMPLETED 均允许写入未归档项目日志。
+- 写入事务执行带用户条件的 Project `SELECT ... FOR UPDATE`，在持有行锁期间检查归档状态并创建或更新日志。Project 归档的 UPDATE 与该锁互斥：归档先提交时，排队的写入重新读取归档状态并拒绝；写入先拿锁时，先完成写入，归档随后生效。
+
+列表查询参数：
+
+| 参数 | 默认值与规则 |
+| --- | --- |
+| `date` | 可选，精确匹配日志日期；空值表示全部日期 |
+| `q` | 可选，最多 200 个 UTF-16 代码单元，在标题及三个正文栏内执行不区分大小写的包含搜索；空白表示不搜索 |
+| `page` | 默认 1，只接受 1–1000 的整数页码；每页固定 20 条 |
+
+日期和关键词可组合，始终叠加当前 Session 用户与项目条件。排序为 `entryDate DESC, createdAt DESC, id ASC`。单次只取最多 21 条判断下一页，不执行全部结果计数；超过 1000 页时需缩小日期或搜索范围。偏移分页期间若有新增/编辑，页面内容可能移动，刷新或重新筛选可重新读取当前顺序。
+
+项目详情页 `/projects/[id]` 提供列表、日期/关键词筛选、分页和新建入口。独立页面包括 `/projects/[id]/diaries/new`、`/projects/[id]/diaries/[diaryId]`、`/projects/[id]/diaries/[diaryId]/edit`。归档时列表/详情仍可读，但不提供日志新建或编辑入口；直接访问新建/编辑页显示只读提示，不渲染表单。原 Diary API 不变。
 
 ## 2. 健康检查
 
@@ -208,5 +267,7 @@ Dashboard 没有新增公开 JSON API。登录后的 `/` 是服务端页面，�
 - `getTodayDiary(user.id, user.timeZone)`：返回用户时区下的今日日期和今日 Diary 状态。
 - `getRecentDiaries(user.id)`：只查询当前用户，按日期倒序返回最多 3 篇 Diary。
 
-未登录访问 `/` 时不会执行个人 Diary 查询，只展示产品介绍以及登录、注册入口。
+项目区域同时调用 `project-service.getDashboardProjects(user.id)`，返回最多 3 个未归档项目的 ID、名称、状态、ProjectDiary 总数和最近日志日期（无日志为 null）。它是一条参数化聚合 SQL，项目和日志均限定当前用户；按最近 entryDate、无日志时的项目 createdAt 回退形成统一活动排序键，再按项目 createdAt DESC、id ASC 稳定排序。所有状态参与，归档项目排除，不读取日志正文。
+
+未登录访问 `/` 时不会执行个人 Diary 或项目查询，只展示产品介绍以及登录、注册入口。
 
