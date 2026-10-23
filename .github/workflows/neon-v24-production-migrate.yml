@@ -347,7 +347,13 @@ jobs:
         run: |
           set -euo pipefail
           command -v psql >/dev/null || { echo "psql is not installed on this runner; stop before any production operation." >&2; exit 1; }
-          psql --version
+          psql_version="$(psql --version)"
+          printf '%s\n' "$psql_version"
+          psql_major="$(printf '%s\n' "$psql_version" | awk '{print $3}' | cut -d. -f1)"
+          [[ "$psql_major" =~ ^[0-9]+$ ]] && (( psql_major >= 16 )) || {
+            echo 'psql/libpq 16 or newer is required for sslrootcert=system.' >&2
+            exit 1
+          }
 
       - name: Capture production old-data baseline (read only)
         working-directory: target
@@ -389,7 +395,7 @@ jobs:
             '-d',decodeURIComponent(u.pathname.slice(1)),'-c',sql], {
             encoding: 'utf8', timeout: 30000, maxBuffer: 4096,
             env: {...process.env, PGPASSWORD:decodeURIComponent(u.password), PGSSLMODE:'verify-full',
-              PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
+              PGSSLROOTCERT:'system', PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
               PGOPTIONS:'-c default_transaction_read_only=on -c statement_timeout=15000'},
           });
           if (result.error?.code === 'ETIMEDOUT' || /statement timeout|canceling statement due to/i.test(result.stderr || '')) {
@@ -517,7 +523,7 @@ jobs:
             '-d',decodeURIComponent(u.pathname.slice(1)),'-c',sql], {
             encoding:'utf8', timeout:30000, maxBuffer:4096,
             env:{...process.env, PGPASSWORD:decodeURIComponent(u.password), PGSSLMODE:'verify-full',
-              PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
+              PGSSLROOTCERT:'system', PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
               PGOPTIONS:'-c default_transaction_read_only=on -c statement_timeout=15000'},
           });
           if (result.error || result.status !== 0) fail();

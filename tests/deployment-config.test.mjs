@@ -77,6 +77,25 @@ test("production baseline reports sanitized failure categories", async () => {
   assert.doesNotMatch(baselineStep, /throw new Error\([^\n]*(?:stdout|stderr|NEON_PROD_DIRECT_URL)/);
 });
 
+test("production psql checks use system CA verification and channel binding", async () => {
+  const diagnostic = await readFile(
+    ".github/workflows/neon-v24-production-readonly-diagnostic.yml",
+    "utf8",
+  );
+  const migration = await readFile(
+    ".github/workflows/neon-v24-production-migrate.yml",
+    "utf8",
+  );
+  const verifiedConnection =
+    /PGSSLMODE:'verify-full',\s*PGSSLROOTCERT:'system',\s*PGCHANNELBINDING:'require'/g;
+
+  assert.equal(diagnostic.match(verifiedConnection)?.length, 1);
+  assert.equal(migration.match(verifiedConnection)?.length, 2);
+  assert.match(diagnostic, /\(\( psql_major >= 16 \)\)/);
+  assert.match(migration, /\(\( psql_major >= 16 \)\)/);
+  assert.doesNotMatch(`${diagnostic}\n${migration}`, /PGSSLMODE:'(?:disable|allow|prefer|require)'/);
+});
+
 test("deployment check reports missing variable names without exposing values", async () => {
   const secretValue = "must-not-appear-in-output";
   const env = { ...process.env, BETTER_AUTH_SECRET: secretValue };
