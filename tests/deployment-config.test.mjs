@@ -19,9 +19,17 @@ test("pins the runtime and separates development and production migrations", asy
   assert.equal(packageJson.scripts["db:migrate:deploy"], "prisma migrate deploy");
 });
 
-test("provides GitHub Actions CI and manual staging migration workflows", async () => {
+test("keeps CI active and completed write migration workflows disabled", async () => {
   const ci = await readFile(".github/workflows/ci.yml", "utf8");
-  const migration = await readFile(".github/workflows/migrate.yml", "utf8");
+  const stagingMigration = await readFile(".github/workflows/migrate.yml", "utf8");
+  const productionMigration = await readFile(
+    ".github/workflows/neon-v24-production-migrate.yml",
+    "utf8",
+  );
+  const productionDiagnostic = await readFile(
+    ".github/workflows/neon-v24-production-readonly-diagnostic.yml",
+    "utf8",
+  );
 
   assert.match(ci, /node-version: 24\.x/);
   assert.match(ci, /version: 10\.34\.6/);
@@ -32,14 +40,15 @@ test("provides GitHub Actions CI and manual staging migration workflows", async 
   assert.match(ci, /pnpm build/);
   assert.match(ci, /image: postgres:16/);
 
-  assert.match(migration, /workflow_dispatch:/);
-  assert.match(migration, /environment: staging/);
-  assert.match(migration, /DATABASE_URL: \$\{\{ secrets\.DATABASE_URL \}\}/);
-  assert.match(migration, /DIRECT_URL: \$\{\{ secrets\.DIRECT_URL \}\}/);
-  assert.match(migration, /pnpm exec prisma validate/);
-  assert.match(migration, /pnpm exec prisma migrate status/);
-  assert.match(migration, /pnpm exec prisma migrate deploy/);
-  assert.doesNotMatch(migration, /postgresql:\/\//);
+  for (const migration of [stagingMigration, productionMigration]) {
+    assert.match(migration, /^on: \[\]$/m);
+    assert.doesNotMatch(migration, /workflow_dispatch:/);
+  }
+  assert.doesNotMatch(stagingMigration, /postgresql:\/\//);
+  assert.doesNotMatch(productionMigration, /postgresql:\/\/[^\s]*neon\.tech/);
+  assert.match(stagingMigration, /prisma migrate deploy/);
+  assert.match(productionMigration, /\["migrate",\s*"deploy"/);
+  assert.match(productionDiagnostic, /workflow_dispatch:/);
 });
 
 test("production baseline reports sanitized failure categories", async () => {

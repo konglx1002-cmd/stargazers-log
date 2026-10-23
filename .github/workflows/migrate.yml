@@ -1,7 +1,7 @@
 name: Staging Database Migration
 
-on:
-  workflow_dispatch:
+# Retained as an audit record. This legacy staging migration entry is closed.
+on: []
 
 permissions:
   contents: read

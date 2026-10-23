@@ -10,9 +10,9 @@
 - 遇到了什么问题？
 - 下一步准备做什么？
 
-正式应用已部署在 Render，数据库为 Neon PostgreSQL，并存在真实用户数据（依据维护者确认）。生产已具备认证、每日 Diary、历史搜索、个人设置与基础 Dashboard。
+正式应用已部署在 Render，数据库为 Neon PostgreSQL，并存在真实用户数据。v2.4.0 已于 2026-10-23 上线，Render Live 与 GitHub main 均为 `6ff6ef57a64e62cca53bb23ba4f0917840dbffb9`，Auto-Deploy 保持关闭。
 
-本地 v2.4 已完成科研项目、项目独立日志和 Dashboard 项目区域，正在阶段 5A 发布准备，**尚未上线**。下文功能列表描述当前仓库实现，不表示这些 v2.4 功能已在线提供。当前 Render live commit、自动部署设置和 Neon migration 状态仍需发布前核实。
+v2.4 已提供科研项目、项目独立日志和 Dashboard 项目区域；生产增量 Migration 已成功执行，旧 Diary 数据完整性校验通过，线上功能验收 8/8 通过。
 
 ## ✨ 核心功能
 
@@ -185,7 +185,7 @@ pnpm db:migrate:dev
 pnpm db:migrate:deploy
 ```
 
-staging / production 只能在独立审批后执行 `migrate deploy`，不能运行 `migrate dev`。v2.4 仅新增 `20261020152832_add_project_diaries`，阶段 3–5A 没有新增 migration。正式库是否已应用该 migration 尚未核实。
+staging / production 只能在独立审批后执行 `migrate deploy`，不能运行 `migrate dev`。v2.4 仅新增 `20261020152832_add_project_diaries`，该 Migration 已在生产成功应用；阶段 3–5A 没有新增 migration。
 
 SQLite → PostgreSQL 脚本是历史本地演练工具。当前生产已经使用 Neon，不应据此再次导入、转换或切换生产数据。
 
@@ -238,7 +238,7 @@ Render / Next.js Node.js Runtime
 
 发布顺序：核实并关闭 Render 自动部署 → 经授权同步审核代码并等待 CI → 核对备份和恢复演练 → 应用待执行 migration → 验证旧数据 → 手工发布同一 SHA → 业务与手机验收。
 
-Render 可能自动部署关联分支，当前开关未确认，因此不能把 push main 当成单纯同步代码。阶段 5A 没有 push、生产 migration、Render 发布或线上验收。完整门禁、回滚和手机检查见 [发布指南](docs/deployment.md)。
+Render Auto-Deploy 当前保持关闭，后续发布仍需单独核实开关并按审批流程执行。完整门禁、回滚和手机检查见 [发布指南](docs/deployment.md)。
 
 ## 📌 当前完成情况
 
@@ -256,17 +256,17 @@ Render 可能自动部署关联分支，当前开关未确认，因此不能把 
 - [x] 维护者确认正式应用已运行于 Render + Neon
 - [x] 本地 v2.4 项目与独立日志功能
 - [x] 本地 Dashboard 项目集成与发布方案
-- [ ] 核实生产 migration、自动部署与备份恢复状态
-- [ ] 经单独授权发布 v2.4 并完成线上及手机验收
+- [x] 生产 Migration 成功，旧 Diary 数据完整性校验通过
+- [x] v2.4 已发布并完成线上 8/8 功能验收
 
 ## 🗺️ Roadmap
 
-### v2.4 发布准备（本地实现完成，待上线）
+### v2.4 发布结果
 
 - [ ] 核实隔离 staging、正式域名与认证配置
-- [ ] 完成 Neon 备份恢复演练与增量 migration 核对
-- [ ] 核实 Render live commit、自动部署和回滚制品
-- [ ] 审批后按“数据库先迁移、应用后部署”发布
+- [x] Neon 生产增量 Migration 成功
+- [x] Render Live commit 为 `6ff6ef57a64e62cca53bb23ba4f0917840dbffb9`，Auto-Deploy 为 Off
+- [x] GitHub main CI 与线上 8/8 功能验收通过
 - [ ] 补充错误监控与结构化日志
 
 ### 长期候选（未实现）

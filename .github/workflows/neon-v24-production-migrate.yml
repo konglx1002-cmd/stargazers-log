@@ -1,26 +1,7 @@
 name: Neon v2.4 Production — Deploy Once
 
-on:
-  workflow_dispatch:
-    inputs:
-      branch_state:
-        description: Confirm Neon production is the intended target and backup snapshot was restored into an independent branch
-        required: true
-        type: choice
-        options:
-          - CONFIRMED_PRODUCTION_BACKUP_RESTORE_VERIFIED
-      deploy_confirmation:
-        description: Type DEPLOY_ONCE_TO_V24_PRODUCTION to authorize production schema migration
-        required: true
-        type: string
-      snapshot_confirmation:
-        description: Type VERIFIED_20261023_PRODUCTION_SNAPSHOT_AND_RESTORE to confirm independent backup recovery test
-        required: true
-        type: string
-      endpoint_id:
-        description: Enter the confirmed Neon Primary Endpoint ID
-        required: true
-        type: string
+# Retained as an audit record. The v2.4 production migration is complete.
+on: []
 
 permissions:
   contents: read
