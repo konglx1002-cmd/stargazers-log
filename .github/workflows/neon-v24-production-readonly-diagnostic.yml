@@ -1,0 +1,127 @@
+name: Neon v2.4 Production — Read-only Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type DIAGNOSE_PRODUCTION_READ_ONLY to authorize one read-only production check
+        required: true
+        type: string
+      endpoint_id:
+        description: Enter the confirmed Neon production Primary Endpoint ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neon-v24-production-migration
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: Diagnose production baseline without writes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: neon-v24-production-migration
+    steps:
+      - name: Verify manual confirmation
+        shell: bash
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          INPUT_ENDPOINT: ${{ inputs.endpoint_id }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == 'refs/heads/main' ]] || { echo 'FAIL: not main'; exit 1; }
+          [[ "$CONFIRM" == 'DIAGNOSE_PRODUCTION_READ_ONLY' ]] || { echo 'FAIL: missing read-only confirmation'; exit 1; }
+          [[ "$INPUT_ENDPOINT" == 'ep-soft-heart-b3j8smnj' ]] || { echo 'FAIL: unexpected endpoint'; exit 1; }
+
+      - name: Check PostgreSQL client
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v psql >/dev/null
+          psql --version
+
+      - name: Check Direct identity and execute one read-only baseline query
+        shell: bash
+        env:
+          NEON_PROD_DIRECT_URL: ${{ secrets.NEON_V24_PROD_DIRECT_URL }}
+          CONFIGURED_ENDPOINT_ID: ${{ vars.NEON_V24_PROD_ENDPOINT_ID }}
+          CONFIGURED_DATABASE: ${{ vars.NEON_V24_PROD_DATABASE }}
+          CONFIGURED_ROLE: ${{ vars.NEON_V24_PROD_ROLE }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { spawnSync } = require('node:child_process');
+          const { appendFileSync } = require('node:fs');
+          const EXPECTED_ENDPOINT = 'ep-soft-heart-b3j8smnj';
+          function report(result, details='') {
+            const line = `Production read-only diagnostic: ${result}${details ? ` (${details})` : ''}`;
+            console.log(line);
+            if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ${line}\n`);
+          }
+          function stop(category) { report('FAIL', category); process.exit(1); }
+          if (process.env.CONFIGURED_ENDPOINT_ID !== EXPECTED_ENDPOINT ||
+              !process.env.CONFIGURED_DATABASE || !process.env.CONFIGURED_ROLE) stop('environment-identity');
+          let u;
+          try { u = new URL(process.env.NEON_PROD_DIRECT_URL); }
+          catch { stop('missing-or-invalid-secret-url'); }
+          const hostname = u.hostname.toLowerCase();
+          let role, database, password;
+          try {
+            role = decodeURIComponent(u.username);
+            database = decodeURIComponent(u.pathname.slice(1));
+            password = decodeURIComponent(u.password);
+          } catch { stop('url-encoding'); }
+          if (!['postgres:', 'postgresql:'].includes(u.protocol) ||
+              hostname.split('.')[0] !== EXPECTED_ENDPOINT ||
+              !hostname.endsWith('.neon.tech') ||
+              hostname.includes('-pooler') ||
+              (u.port && u.port !== '5432') ||
+              role !== process.env.CONFIGURED_ROLE ||
+              database !== process.env.CONFIGURED_DATABASE ||
+              !password || !!u.hash ||
+              u.searchParams.getAll('sslmode').length !== 1 ||
+              u.searchParams.get('sslmode') !== 'require' ||
+              u.searchParams.getAll('channel_binding').length !== 1 ||
+              u.searchParams.get('channel_binding') !== 'require' ||
+              [...u.searchParams.keys()].some(k => !['sslmode', 'channel_binding'].includes(k))) {
+            stop('direct-endpoint-or-tls-identity');
+          }
+          // Use the same psql/libpq settings and SQL as the production baseline job.
+          // No log rows or passwords are printed. Read-only enforced server-side via PGOPTIONS.
+          const sql = `SELECT (SELECT COUNT(*) FROM "User"), (SELECT COUNT(*) FROM "Diary"),
+            (SELECT COUNT(*) FROM "Account"), (SELECT COUNT(*) FROM "Session"),
+            (SELECT md5(COALESCE(string_agg(to_jsonb(d)::text, '|' ORDER BY d.id), '')) FROM "Diary" d)`;
+          const start = Date.now();
+          const result = spawnSync('psql', ['-X','-A','-t','-F','|','-v','ON_ERROR_STOP=1',
+            '-h',hostname,'-p',u.port || '5432','-U',role,'-d',database,'-c',sql], {
+            encoding:'utf8', timeout:30000, maxBuffer:4096,
+            env: { ...process.env, PGPASSWORD: password, PGSSLMODE:'verify-full',
+              PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
+              PGOPTIONS:'-c default_transaction_read_only=on -c statement_timeout=15000' }
+          });
+          const ms = Date.now() - start;
+          if (result.error?.code === 'ETIMEDOUT' || result.signal) stop('query-or-process-timeout');
+          if (result.error) stop('psql-execution');
+          if (result.status !== 0) {
+            const stderr = result.stderr || '';
+            if (/root certificate|certificate verify failed|certificate file|SSL error|SSL SYSCALL/i.test(stderr)) stop('tls-or-ca');
+            if (/password authentication failed|no pg_hba.conf entry|authentication failed/i.test(stderr)) stop('authentication');
+            if (/could not translate host name|Name or service not known/i.test(stderr)) stop('dns');
+            if (/timeout expired|Connection timed out/i.test(stderr)) stop('network-timeout');
+            if (/could not connect|Connection refused|Network is unreachable|server closed the connection/i.test(stderr)) stop('network-or-server');
+            if (/ERROR:|relation .* does not exist/i.test(stderr)) stop('sql-execution');
+            stop('unclassified-psql-error');
+          }
+          const values = result.stdout.trim().split('|');
+          if (values.length !== 5 || !values.slice(0,4).every(x => /^\d+$/.test(x)) ||
+              !/^[a-f0-9]{32}$/.test(values[4])) stop('result-parsing');
+          const [users, diaries, accounts, sessions] = values.slice(0,4).map(Number);
+          const match = users === 2 && diaries === 2 && accounts === 2 &&
+            values[4] === '0d4154bef55833cceb751ebb4fd1cb37';
+          if (!match) stop('production-baseline-differs-from-reviewed-snapshot');
+          report('PASS', `baseline matches; sessions=${sessions}; elapsed-ms=${ms}`);
+          NODE
