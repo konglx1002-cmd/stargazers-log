@@ -342,6 +342,67 @@ jobs:
           });
           NODE
 
+      - name: Confirm PostgreSQL read-only client is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v psql >/dev/null || { echo "psql is not installed on this runner; stop before any production operation." >&2; exit 1; }
+          psql --version
+
+      - name: Capture production old-data baseline (read only)
+        working-directory: target
+        shell: bash
+        env:
+          NEON_PROD_DIRECT_URL: ${{ secrets.NEON_V24_PROD_DIRECT_URL }}
+          EXPECTED_ENDPOINT_ID: ep-soft-heart-b3j8smnj
+          CONFIGURED_ENDPOINT_ID: ${{ vars.NEON_V24_PROD_ENDPOINT_ID }}
+          CONFIGURED_DATABASE: ${{ vars.NEON_V24_PROD_DATABASE }}
+          CONFIGURED_ROLE: ${{ vars.NEON_V24_PROD_ROLE }}
+          BASELINE_FILE: ${{ runner.temp }}/neon-v24-production-baseline.json
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { spawnSync } = require('node:child_process');
+          const { writeFileSync } = require('node:fs');
+          function fail() { throw new Error('Production read-only baseline failed. Do not deploy.'); }
+          let u;
+          try { u = new URL(process.env.NEON_PROD_DIRECT_URL); } catch { fail(); }
+          if (!['postgres:', 'postgresql:'].includes(u.protocol) ||
+              u.hostname.split('.')[0] !== process.env.EXPECTED_ENDPOINT_ID ||
+              !u.hostname.endsWith('.neon.tech') ||
+              process.env.CONFIGURED_ENDPOINT_ID !== process.env.EXPECTED_ENDPOINT_ID ||
+              (u.port && u.port !== '5432') ||
+              decodeURIComponent(u.username) !== process.env.CONFIGURED_ROLE ||
+              decodeURIComponent(u.pathname.slice(1)) !== process.env.CONFIGURED_DATABASE ||
+              !u.password || u.hash ||
+              u.searchParams.getAll('sslmode').length !== 1 || u.searchParams.get('sslmode') !== 'require' ||
+              u.searchParams.getAll('channel_binding').length !== 1 || u.searchParams.get('channel_binding') !== 'require' ||
+              [...u.searchParams.keys()].some(k => !['sslmode','channel_binding'].includes(k))) fail();
+          const sql = `SELECT (SELECT COUNT(*) FROM "User"), (SELECT COUNT(*) FROM "Diary"),
+            (SELECT COUNT(*) FROM "Account"), (SELECT COUNT(*) FROM "Session"),
+            (SELECT md5(COALESCE(string_agg(to_jsonb(d)::text, '|' ORDER BY d.id), '')) FROM "Diary" d)`;
+          const result = spawnSync('psql', ['-X','-A','-t','-F','|','-v','ON_ERROR_STOP=1',
+            '-h',u.hostname,'-p',u.port || '5432','-U',decodeURIComponent(u.username),
+            '-d',decodeURIComponent(u.pathname.slice(1)),'-c',sql], {
+            encoding: 'utf8', timeout: 30000, maxBuffer: 4096,
+            env: {...process.env, PGPASSWORD:decodeURIComponent(u.password), PGSSLMODE:'verify-full',
+              PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
+              PGOPTIONS:'-c default_transaction_read_only=on -c statement_timeout=15000'},
+          });
+          if (result.error || result.status !== 0) fail();
+          const values = result.stdout.trim().split('|');
+          if (values.length !== 5 || !values.slice(0,4).every(x => /^\d+$/.test(x)) || !/^[a-f0-9]{32}$/.test(values[4])) fail();
+          const [users, diaries, accounts, sessions] = values.slice(0,4).map(Number);
+          const fingerprint = values[4];
+          // Abort if production data changed since the snapshot and manual baseline checks.
+          if (users !== 2 || diaries !== 2 || accounts !== 2 ||
+              fingerprint !== '0d4154bef55833cceb751ebb4fd1cb37') {
+            throw new Error('Production baseline has changed since the reviewed snapshot; abort before deploy.');
+          }
+          writeFileSync(process.env.BASELINE_FILE, JSON.stringify({users, diaries, accounts, sessions, fingerprint}), {mode:0o600, flag:'wx'});
+          console.log('Production read-only baseline captured and reviewed baseline matched; business data not displayed.');
+          NODE
+
       - name: Deploy exactly once to the approved Neon production Direct endpoint
         working-directory: target
         shell: bash
@@ -405,6 +466,58 @@ jobs:
           });
           NODE
 
+
+      - name: Verify production old data unchanged after deploy (read only)
+        if: ${{ success() }}
+        working-directory: target
+        shell: bash
+        env:
+          NEON_PROD_DIRECT_URL: ${{ secrets.NEON_V24_PROD_DIRECT_URL }}
+          EXPECTED_ENDPOINT_ID: ep-soft-heart-b3j8smnj
+          CONFIGURED_ENDPOINT_ID: ${{ vars.NEON_V24_PROD_ENDPOINT_ID }}
+          CONFIGURED_DATABASE: ${{ vars.NEON_V24_PROD_DATABASE }}
+          CONFIGURED_ROLE: ${{ vars.NEON_V24_PROD_ROLE }}
+          BASELINE_FILE: ${{ runner.temp }}/neon-v24-production-baseline.json
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { spawnSync } = require('node:child_process');
+          const { readFileSync, unlinkSync, appendFileSync } = require('node:fs');
+          function fail() { throw new Error('Post-deploy old-data verification failed: inspect production; do not rerun migration automatically.'); }
+          let u;
+          try { u = new URL(process.env.NEON_PROD_DIRECT_URL); } catch { fail(); }
+          if (!['postgres:','postgresql:'].includes(u.protocol) ||
+              u.hostname.split('.')[0] !== process.env.EXPECTED_ENDPOINT_ID ||
+              !u.hostname.endsWith('.neon.tech') ||
+              process.env.CONFIGURED_ENDPOINT_ID !== process.env.EXPECTED_ENDPOINT_ID ||
+              (u.port && u.port !== '5432') ||
+              decodeURIComponent(u.username) !== process.env.CONFIGURED_ROLE ||
+              decodeURIComponent(u.pathname.slice(1)) !== process.env.CONFIGURED_DATABASE || !u.password || u.hash ||
+              u.searchParams.getAll('sslmode').length !== 1 || u.searchParams.get('sslmode') !== 'require' ||
+              u.searchParams.getAll('channel_binding').length !== 1 || u.searchParams.get('channel_binding') !== 'require' ||
+              [...u.searchParams.keys()].some(k => !['sslmode','channel_binding'].includes(k))) fail();
+          const sql = `SELECT (SELECT COUNT(*) FROM "User"), (SELECT COUNT(*) FROM "Diary"),
+            (SELECT COUNT(*) FROM "Account"), (SELECT COUNT(*) FROM "Session"),
+            (SELECT md5(COALESCE(string_agg(to_jsonb(d)::text, '|' ORDER BY d.id), '')) FROM "Diary" d)`;
+          const result = spawnSync('psql', ['-X','-A','-t','-F','|','-v','ON_ERROR_STOP=1',
+            '-h',u.hostname,'-p',u.port || '5432','-U',decodeURIComponent(u.username),
+            '-d',decodeURIComponent(u.pathname.slice(1)),'-c',sql], {
+            encoding:'utf8', timeout:30000, maxBuffer:4096,
+            env:{...process.env, PGPASSWORD:decodeURIComponent(u.password), PGSSLMODE:'verify-full',
+              PGCHANNELBINDING:'require', PGCONNECT_TIMEOUT:'15',
+              PGOPTIONS:'-c default_transaction_read_only=on -c statement_timeout=15000'},
+          });
+          if (result.error || result.status !== 0) fail();
+          const v = result.stdout.trim().split('|');
+          if (v.length !== 5 || !v.slice(0,4).every(x => /^\d+$/.test(x)) || !/^[a-f0-9]{32}$/.test(v[4])) fail();
+          const before = JSON.parse(readFileSync(process.env.BASELINE_FILE,'utf8'));
+          const [users,diaries,accounts,sessions] = v.slice(0,4).map(Number);
+          if (users !== before.users || diaries !== before.diaries || accounts !== before.accounts || v[4] !== before.fingerprint) fail();
+          unlinkSync(process.env.BASELINE_FILE);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '\n### Production data integrity\n- User, Diary, Account counts: unchanged\n- Diary content fingerprint: unchanged\n- Session count: observed (not compared because sessions can change)\n');
+          console.log('Production old-data counts and content fingerprint match the pre-migration baseline.');
+          NODE
 
       - name: Verify production migration status after deploy
         working-directory: target
