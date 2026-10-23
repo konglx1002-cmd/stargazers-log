@@ -347,7 +347,13 @@ jobs:
         run: |
           set -euo pipefail
           command -v psql >/dev/null || { echo "psql is not installed on this runner; stop before any production operation." >&2; exit 1; }
-          psql --version
+          psql_version="$(psql --version)"
+          printf '%s\n' "$psql_version"
+          psql_major="$(printf '%s\n' "$psql_version" | awk '{print $3}' | cut -d. -f1)"
+          [[ "$psql_major" =~ ^[0-9]+$ ]] && (( psql_major >= 16 )) || {
+            echo 'psql/libpq 16 or newer is required for sslrootcert=system.' >&2
+            exit 1
+          }
 
       - name: Capture production old-data baseline (read only)
         working-directory: target

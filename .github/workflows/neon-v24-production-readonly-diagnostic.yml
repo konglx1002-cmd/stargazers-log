@@ -42,7 +42,13 @@ jobs:
         run: |
           set -euo pipefail
           command -v psql >/dev/null
-          psql --version
+          psql_version="$(psql --version)"
+          printf '%s\n' "$psql_version"
+          psql_major="$(printf '%s\n' "$psql_version" | awk '{print $3}' | cut -d. -f1)"
+          [[ "$psql_major" =~ ^[0-9]+$ ]] && (( psql_major >= 16 )) || {
+            echo 'psql/libpq 16 or newer is required for sslrootcert=system.' >&2
+            exit 1
+          }
 
       - name: Check Direct identity and execute one read-only baseline query
         shell: bash

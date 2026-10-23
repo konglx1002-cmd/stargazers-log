@@ -91,6 +91,8 @@ test("production psql checks use system CA verification and channel binding", as
 
   assert.equal(diagnostic.match(verifiedConnection)?.length, 1);
   assert.equal(migration.match(verifiedConnection)?.length, 2);
+  assert.match(diagnostic, /\(\( psql_major >= 16 \)\)/);
+  assert.match(migration, /\(\( psql_major >= 16 \)\)/);
   assert.doesNotMatch(`${diagnostic}\n${migration}`, /PGSSLMODE:'(?:disable|allow|prefer|require)'/);
 });
 
