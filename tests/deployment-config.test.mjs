@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -40,6 +40,41 @@ test("provides GitHub Actions CI and manual staging migration workflows", async 
   assert.match(migration, /pnpm exec prisma migrate status/);
   assert.match(migration, /pnpm exec prisma migrate deploy/);
   assert.doesNotMatch(migration, /postgresql:\/\//);
+});
+
+test("production baseline reports sanitized failure categories", async () => {
+  const workflow = await readFile(
+    ".github/workflows/neon-v24-production-migrate.yml",
+    "utf8",
+  );
+  const baselineStep = workflow.match(
+    /- name: Capture production old-data baseline \(read only\)[\s\S]*?(?=\n      - name: Deploy exactly once)/,
+  )?.[0];
+
+  assert.ok(baselineStep);
+  const baselineScript = baselineStep.match(
+    /node <<'NODE'\r?\n([\s\S]*?)\r?\n\s+NODE/,
+  )?.[1];
+  assert.ok(baselineScript);
+  const syntaxCheck = spawnSync(process.execPath, ["--check", "-"], {
+    input: baselineScript,
+    encoding: "utf8",
+  });
+  assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
+  assert.match(baselineStep, /Production endpoint validation failed\./);
+  assert.match(baselineStep, /Production psql connection or TLS validation failed\./);
+  assert.match(baselineStep, /Production read-only baseline query timed out\./);
+  assert.match(baselineStep, /Production read-only baseline result parsing failed\./);
+  assert.match(baselineStep, /Production baseline has changed since the reviewed snapshot/);
+  assert.match(baselineStep, /Production read-only SQL execution failed\./);
+  assert.match(baselineStep, /PGSSLMODE:'verify-full'/);
+  assert.match(baselineStep, /default_transaction_read_only=on/);
+  assert.doesNotMatch(baselineStep, /Production read-only baseline failed\./);
+  assert.doesNotMatch(
+    baselineStep,
+    /console\.(?:log|error)\([^\n]*(?:result\.(?:stdout|stderr)|NEON_PROD_DIRECT_URL)/,
+  );
+  assert.doesNotMatch(baselineStep, /throw new Error\([^\n]*(?:stdout|stderr|NEON_PROD_DIRECT_URL)/);
 });
 
 test("deployment check reports missing variable names without exposing values", async () => {
