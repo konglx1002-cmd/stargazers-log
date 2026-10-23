@@ -1,21 +1,19 @@
 # Render + Neon 发布指南与 v2.4 检查单
 
-校准日期：2026-10-22。正式应用已部署在 Render，数据库为 Neon PostgreSQL，且存在真实数据（依据项目维护者确认）。v2.4 阶段 2–5A 的功能目前仅在本地完成，尚未生产发布。
+校准日期：2026-10-23。正式应用部署在 Render，数据库为 Neon PostgreSQL。v2.4.0 已上线：GitHub main 与 Render Live 均为 `6ff6ef57a64e62cca53bb23ba4f0917840dbffb9`，Auto-Deploy 为 Off；生产 Migration 成功，旧 Diary 数据完整性校验通过，线上验收 8/8 通过。
 
-本文是待审批的执行方案。阶段 5A 只做本地开发、隔离测试及公开资料核对；未访问 Neon、操作 Render、触发 migration workflow 或 push。
+本文保留发布与回滚流程供后续版本复用。已完成的生产和旧 staging 写入工作流仅作为审计记录保留，不再提供触发入口；只读诊断与普通 CI 保持可用。
 
-## 1. 发布前尚未确认的事实
+## 1. v2.4 发布结果与后续事项
 
-| 项目 | 当前结论 | 下一发布阶段的核对方式 |
+| 项目 | 当前结论 | 后续要求 |
 | --- | --- | --- |
-| GitHub main | 2026-10-22 上次成功只读核对为 `d797164e5d3147fccce7dc0d3cb6e32f8013ab8c`；恢复验证时再次核对因网络失败，未确认是否变化 | 发布前重新 `git ls-remote --heads origin main`，比对完整目标 SHA |
-| 本地提交 | 接手时 `main` 为 `263e726`，领先远端 3 个功能提交；5A 再新增本地提交 | `git status --short --branch`、`git log --oneline origin/main..HEAD`，重新核实远端追踪引用是否最新 |
-| Render live commit | 未确认，不根据 GitHub main 推断 | 在 Render Deploys 页面记录当前 live commit 和可回滚 deploy |
-| Render 分支与 Auto-Deploy | 未确认，仓库没有 Render 声明式配置 | 只读查看 Settings 中关联仓库、Branch、Auto-Deploy、构建/启动命令 |
+| GitHub main / Render Live | 均为 `6ff6ef57a64e62cca53bb23ba4f0917840dbffb9` | 后续发布继续逐次比对完整 SHA |
+| Render Auto-Deploy | Off | 后续发布前重新核实，不自动开启 |
 | Render 健康检查 | 未确认平台设置 | 确认 Health Check Path 为 `/api/health` |
-| Neon migration | 未查询生产库 | 获授权后只读核对 migration 表、DDL、索引及外键 |
+| Neon Migration | v2.4 增量 Migration 成功，旧 Diary 数据完整性通过 | 保留迁移历史与审核记录，不重复执行 |
 | Neon 恢复窗口与备份 | 未确认，不能假定套餐具备足够 PITR 窗口 | 查看实际项目设置和恢复权限，完成独立副本恢复演练 |
-| 手机与线上冒烟 | 未执行 | 按第 7、9 节逐项留存结果 |
+| 线上功能验收 | 8/8 通过 | 后续版本按第 7、9 节重新验收 |
 
 Render 可以在关联分支 push 后自动部署，也可配置等待 CI 或关闭自动部署。因此，未来即使只打算 push 代码，也必须先核实自动部署开关；等待 CI 并不等于等待数据库 migration。[Render 自动部署说明](https://render.com/docs/deploys)
 
@@ -80,7 +78,7 @@ staging 必须使用独立应用、数据库/分支和认证密钥。若为恢�
 - 四个受控环境变量为 DATABASE_URL、DIRECT_URL、BETTER_AUTH_SECRET、BETTER_AUTH_URL；保留现有认证密钥与正式 Origin，避免无意使 Session 失效。
 - 构建和启动命令都不执行 migration。Render Free 不应被假定具备付费服务的 pre-deploy command；迁移通过独立审批入口执行。[Render 部署能力](https://render.com/docs/deploys)
 
-`.github/workflows/ci.yml` 在 push/PR 时检查临时 PostgreSQL、lint、测试和 build，不负责生产迁移或 Render 发布。`.github/workflows/migrate.yml` 仅为手动 `workflow_dispatch` 的 `staging` 工作流，Secret 的实际目标未核实；不能用它假装 production 发布步骤，也不能把生产 Secret 填入 staging。
+`.github/workflows/ci.yml` 在 push/PR 时检查临时 PostgreSQL、lint、测试和 build，不负责生产迁移或 Render 发布。已完成的 `.github/workflows/migrate.yml` 与 v2.4 生产写入工作流已禁用触发，文件保留用于审计；生产只读诊断仍可手动运行。
 
 ## 6. 发布失败与回滚
 
